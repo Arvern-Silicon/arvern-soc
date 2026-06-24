@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# Parse command line arguments
+NO_QUIT=0
+LIB_FLAVOR="lib_default"
+FABRIC_TYPE="FUSED"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -noquit|--noquit|--interactive|-i)
+            NO_QUIT=1
+            shift
+            ;;
+        -lib|--lib)
+            LIB_FLAVOR="$2"
+            shift 2
+            ;;
+        -fabric|--fabric)
+            FABRIC_TYPE="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [-noquit|--interactive|-i] [-lib <flavor>] [-fabric <type>]"
+            echo "  -noquit, --noquit, --interactive, -i : Keep dc_shell open after synthesis"
+            echo "  -lib <flavor>                        : Select library flavor (default: lib_default)"
+            echo "  -fabric <type>                       : Select fabric type (default: HIPERF)"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate library flavor
+if [[ ! -f "./libraries/setup_${LIB_FLAVOR}.tcl" ]]; then
+    echo "Error: Unknown library flavor '${LIB_FLAVOR}'"
+    echo "Valid flavors:"
+    for f in ./libraries/setup_*.tcl; do
+        flavor=$(basename "$f" .tcl | sed 's/^setup_//')
+        echo "  ${flavor}"
+    done
+    exit 1
+fi
+
+rm -rf ./results/*
+
+START_TIME=$SECONDS
+
+# Export variables so synthesis.tcl can read them
+export FABRIC_TYPE
+export NO_QUIT
+export LIB_FLAVOR
+
+if [[ $NO_QUIT -eq 1 ]]; then
+    echo "Interactive mode: dc_shell will remain open after synthesis completes"
+fi
+
+# Generate the RTL source-file TCL fragment (submit_syn.tcl) from the single-
+# source design filelist (rtl/verilog/filelist.f), replacing the formerly hand-
+# maintained RTL_SOURCE_FILES list in read.tcl. Pulls the CPU + IP filelists so
+# shared primitives (arv_dff, arv_ipdff, ...) are always included and never drift.
+FLATTEN="$(dirname "$(realpath "$0")")/../../../../../arvern/sim/rtl_sim/bin/flatten_filelist.py"
+python3 "$FLATTEN" --format tcl ../../rtl/verilog/filelist.f ./submit_syn.tcl
+
+dc_shell-t -f synthesis.tcl | tee ./results/synthesis.log
+
+rm -rf ./clog*
+
+ELAPSED=$(( SECONDS - START_TIME ))
+HOURS=$(( ELAPSED / 3600 ))
+MINUTES=$(( (ELAPSED % 3600) / 60 ))
+SECS=$(( ELAPSED % 60 ))
+echo ""
+echo "Synthesis completed in ${HOURS}h ${MINUTES}m ${SECS}s"

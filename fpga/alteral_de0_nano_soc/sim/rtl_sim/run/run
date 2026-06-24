@@ -1,0 +1,145 @@
+#!/bin/bash
+# ----------------------------------------------------------------------------
+#          _    _           Family:    aRVern System IPs
+#         / \__/ \          File:      run
+#        /   /\   \         --------------------------------------------
+#    ===/   /=========      Copyright: (c) 2026, aRVern-dev
+#      /   / RV \   \       Contact:   arvernsilicon@gmail.com
+#     /___/______\___\      GitHub:    https://github.com/Arvern-Silicon
+#
+# SPDX-License-Identifier: BSD-3-Clause
+# Full license text is available in the LICENSE file at the repository root.
+# ----------------------------------------------------------------------------
+
+###############################################################################
+#                            Parameter Check                                  #
+###############################################################################
+
+# List available tests (must have both stimulus file and software directory)
+list_tests() {
+    echo ""
+    echo "Available tests:"
+    for stim in ../src/*.v; do
+        name=$(basename "$stim" .v)
+        # Skip submit.f-related files
+        if [ "$name" = "submit" ]; then continue; fi
+        if [ -d "../../../software/apps/${name}" ]; then
+            echo "  - ${name}"
+        fi
+    done
+    echo ""
+}
+
+if [ $# -lt 1 ]; then
+    echo ""
+    echo "USAGE   : ./run <test_name>"
+    echo ""
+    echo "Example : ./run leds"
+    list_tests
+    exit 1
+fi
+
+TEST_NAME=$1
+shift
+
+###############################################################################
+#                          Check test exists                                  #
+###############################################################################
+
+# Check for stimulus file and software directory
+if [ ! -e ../src/${TEST_NAME}.v ] || [ ! -d ../../../software/apps/${TEST_NAME} ]; then
+    echo ""
+    echo "ERROR: Test '${TEST_NAME}' not found"
+    list_tests
+    exit 1
+fi
+
+STIMULUS_FILE="../src/${TEST_NAME}.v"
+
+###############################################################################
+#                Generate toolchain config from RTL                           #
+###############################################################################
+
+RTL_FILE="../../../rtl/verilog/arvern_fpga.v"
+
+echo ""
+echo " ====================================="
+echo "|  Generating toolchain configuration"
+echo " ====================================="
+
+../bin/gen_march_config.sh ${RTL_FILE} ./march_config.sh
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to generate march_config.sh"
+    exit 1
+fi
+
+###############################################################################
+#                        Compile software                                     #
+###############################################################################
+
+echo ""
+echo " ====================================="
+echo "|  Compiling software: ${TEST_NAME}"
+echo " ====================================="
+echo ""
+
+cd ../../../software/apps/${TEST_NAME}
+make clean
+make EXTRA_CFLAGS="-DSIMULATION"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Software compilation failed"
+    exit 1
+fi
+cd ../../../sim/rtl_sim/run
+
+###############################################################################
+#                     Convert to memory file                                  #
+###############################################################################
+
+echo ""
+echo " ====================================="
+echo "|  Converting to memory file"
+echo " ====================================="
+echo ""
+
+# Path to ihex2mem.py from the arvern core
+IHEX2MEM="../../../../../../arvern/sim/rtl_sim/bin/ihex2mem.py"
+IHEX_FILE="../../../software/apps/${TEST_NAME}/${TEST_NAME}.ihex"
+
+if [ ! -e ${IHEX_FILE} ]; then
+    echo "ERROR: Intel HEX file ${IHEX_FILE} not found"
+    exit 1
+fi
+
+# Convert ihex to mem (ROM at 0x20000000, 32KB)
+python3 ${IHEX2MEM} -i ${IHEX_FILE} -o pmem.mem -b 0x20000000 -s 32768
+if [ $? -ne 0 ]; then
+    echo "ERROR: ihex to mem conversion failed"
+    exit 1
+fi
+
+###############################################################################
+#                      Setup stimulus                                         #
+###############################################################################
+
+# Create symlink to stimulus file
+rm -f stimulus.v
+ln -s ${STIMULUS_FILE} stimulus.v
+
+###############################################################################
+#                      Run simulation                                         #
+###############################################################################
+
+echo ""
+echo " ====================================="
+echo "|  Running RTL simulation: ${TEST_NAME}"
+echo " ====================================="
+echo ""
+
+# Enable waveform dump for interactive runs
+export SIMULATION_NODUMP=0
+
+# Pass extra defines (e.g. VERY_LONG_TIMEOUT for tests with long firmware delays)
+export SIMULATION_DEFINES="${SIMULATION_DEFINES:-}"
+
+../bin/rtlsim.sh tb_arvern_fpga ./stimulus.v ../../../bench/verilog/submit.f

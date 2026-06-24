@@ -1,0 +1,15 @@
+# ----------------------------------------------------------------------------
+# Repository-wide ignores for arvern-soc.
+# ----------------------------------------------------------------------------
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc
+
+# Eclipse / Nios II workspace metadata (vendor demo trees)
+.metadata/

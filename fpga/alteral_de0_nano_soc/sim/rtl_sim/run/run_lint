@@ -1,0 +1,156 @@
+#!/bin/bash
+
+#==============================================================================
+# Script: run_lint
+# Purpose: Run Verilator linting on FPGA RTL design
+# Usage: run_lint [OPTIONS] [top_module]
+#==============================================================================
+
+# Default configuration
+DEFAULT_TOP="arvern_fpga"
+DEFAULT_FILELIST="../../../rtl/verilog/filelist.f"
+DEFAULT_WAIVERS="waivers.vlt"
+
+# Parse command line options
+TOP_MODULE="$DEFAULT_TOP"
+FILELIST="$DEFAULT_FILELIST"
+WAIVERS="$DEFAULT_WAIVERS"
+EXTRA_FLAGS=""
+VERBOSE=0
+NO_WAIVERS=0
+
+usage() {
+    cat << EOF
+Usage: $0 [OPTIONS] [top_module]
+
+Run Verilator lint checking on FPGA RTL design.
+
+Arguments:
+    top_module          Top-level module name (default: $DEFAULT_TOP)
+
+Options:
+    -f, --filelist FILE Specify filelist (default: $DEFAULT_FILELIST)
+    -w, --waivers FILE  Specify waivers file (default: $DEFAULT_WAIVERS)
+    -n, --no-waivers    Ignore waivers file
+    -e, --extra FLAGS   Additional Verilator flags (quoted string)
+    -v, --verbose       Verbose output
+    -h, --help          Show this help message
+
+Examples:
+    $0                           # Lint arvern_fpga with defaults
+    $0 my_module                 # Lint custom module
+    $0 -n arvern_fpga            # Lint without waivers
+    $0 -e "--timing" arvern      # Lint with extra flags
+    $0 -f custom.f my_module     # Use custom filelist
+
+EOF
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -f|--filelist)
+            FILELIST="$2"
+            shift 2
+            ;;
+        -w|--waivers)
+            WAIVERS="$2"
+            shift 2
+            ;;
+        -n|--no-waivers)
+            NO_WAIVERS=1
+            shift
+            ;;
+        -e|--extra)
+            EXTRA_FLAGS="$2"
+            shift 2
+            ;;
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option: $1"
+            echo "Use -h or --help for usage information"
+            exit 1
+            ;;
+        *)
+            # Assume it's the top module name
+            TOP_MODULE="$1"
+            shift
+            ;;
+    esac
+done
+
+# Check if required files exist
+if [ ! -f "$FILELIST" ]; then
+    echo "Error: Filelist not found: $FILELIST"
+    exit 1
+fi
+
+# Build waivers argument
+WAIVERS_ARG=""
+if [ $NO_WAIVERS -eq 0 ] && [ -f "$WAIVERS" ]; then
+    WAIVERS_ARG="$WAIVERS"
+    [ $VERBOSE -eq 1 ] && echo "Using waivers file: $WAIVERS"
+elif [ $NO_WAIVERS -eq 0 ] && [ ! -f "$WAIVERS" ]; then
+    echo "Warning: Waivers file not found: $WAIVERS (continuing without waivers)"
+fi
+
+# Print header
+echo ""
+echo " ======================================================"
+echo "|         LINT:          ${TOP_MODULE}"
+echo " ======================================================"
+echo ""
+
+if [ $VERBOSE -eq 1 ]; then
+    echo "Configuration:"
+    echo "  Top module: $TOP_MODULE"
+    echo "  Filelist:   $FILELIST"
+    echo "  Waivers:    ${WAIVERS_ARG:-<none>}"
+    echo "  Extra flags: ${EXTRA_FLAGS:-<none>}"
+    echo ""
+fi
+
+# Flatten the filelist: resolve nested -f includes (e.g. the IPs' arv_common
+# pull) to absolute paths and drop duplicate sources, so Verilator sees a clean,
+# self-contained list regardless of the invocation cwd. Falls back to the raw
+# filelist if the flattener can't be found.
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+FLATTEN="$SCRIPT_DIR/../../../../../../arvern/sim/rtl_sim/bin/flatten_filelist.py"
+FLAT_FILELIST="./flat_lint.f"
+if [ -f "$FLATTEN" ]; then
+    python3 "$FLATTEN" "$FILELIST" "$FLAT_FILELIST"
+    FILELIST="$FLAT_FILELIST"
+else
+    echo "Warning: flatten_filelist.py not found at $FLATTEN; using raw filelist (nested -f may not resolve)."
+fi
+
+# Build and execute verilator command
+VERILATOR_CMD="verilator --lint-only -Wall -Wpedantic --top $TOP_MODULE  ../../../bench/verilog/altsyncram.v"
+[ -n "$WAIVERS_ARG" ] && VERILATOR_CMD="$VERILATOR_CMD $WAIVERS_ARG"
+VERILATOR_CMD="$VERILATOR_CMD $EXTRA_FLAGS -f $FILELIST"
+
+if [ $VERBOSE -eq 1 ]; then
+    echo "Running: $VERILATOR_CMD"
+    echo ""
+fi
+
+# Execute and capture exit code
+eval $VERILATOR_CMD
+EXIT_CODE=$?
+
+echo ""
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "Lint check PASSED"
+else
+    echo "Lint check FAILED (exit code: $EXIT_CODE)"
+fi
+echo ""
+
+exit $EXIT_CODE

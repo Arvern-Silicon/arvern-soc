@@ -1,0 +1,9 @@
+`verilator_config
+
+// Altera altsyncram: defparam is the standard instantiation style for Altera megafunctions
+lint_off -rule DEFPARAM        -file "*/sram_8kb_wrapper.v"
+lint_off -rule DEFPARAM        -file "*/rom_32kb.v"
+lint_off -rule DEFPARAM        -file "*/sram_32kb.v"
+
+// Altsyncram behavioral model: unused parameters are expected
+lint_off -rule UNUSEDPARAM    -file "*/altsyncram.v"
