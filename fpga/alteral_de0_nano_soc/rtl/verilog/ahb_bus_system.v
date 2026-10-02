@@ -66,6 +66,7 @@ input  wire              m_nx_hmastlock_i,
 input  wire        [3:0] m_nx_hprot_i,
 input  wire        [2:0] m_nx_hsize_i,
 input  wire              m_nx_hsmode_i,
+input  wire              m_nx_hmaster_i,
 input  wire        [1:0] m_nx_htrans_i,
 input  wire       [31:0] m_nx_hwdata_i,
 input  wire              m_nx_hwrite_i,
@@ -250,17 +251,27 @@ wire               [1:0] s_aclint_htrans;
 wire              [31:0] s_aclint_hwdata;
 wire                     s_aclint_hwrite;
 
-// ROM Interface
-//   The fused fabric drives a 30-bit word address; rom0_addr_full feeds the
-//   physical macro after slicing down to ROM_ADDRW.
-wire              [31:0] rom0_dout;
-wire              [29:0] rom0_addr_full;
-wire     [ROM_ADDRW-1:0] rom0_addr;
-wire                     rom0_cen;
-wire                     rom0_clk;
+// Program-memory Interface (executable slot 0 @ 0x20000000 - writable
+// init-at-config SRAM so a debugger can load firmware here over SBA).
+//   The fused fabric drives a 30-bit word address; pmem_addr_full feeds the physical
+//   macro after slicing down to ROM_ADDRW (= the size of the 0x20000000 region).
+wire              [31:0] pmem_dout;
+wire              [29:0] pmem_addr_full;
+wire     [ROM_ADDRW-1:0] pmem_addr;
+wire                     pmem_cen;
+wire                     pmem_clk;
+wire              [31:0] pmem_din;
+wire               [3:0] pmem_wen;
 
-// Executable SRAM Interface
-//   Same 30-bit-address slicing as ROM.
+// Absent ROM controller (NR_S_X_ROM=0): the interconnect drives these to 0; named
+// here (not left empty) so lint stays clean, then reduced into a sink.
+wire              [29:0] rom_addr_o_unused;
+wire                     rom_cen_o_unused;
+wire                     rom_clk_o_unused;
+wire                     rom_ports_unused_ok = |{1'b0, rom_addr_o_unused, rom_cen_o_unused, rom_clk_o_unused, 1'b0};
+
+// Executable SRAM Interface (slot 1 @ 0x80000000)
+//   Same 30-bit-address slicing as the program memory.
 wire              [31:0] sram_x_dout;
 wire              [29:0] sram_x_addr_full;
 wire  [SRAM_X_ADDRW-1:0] sram_x_addr;
@@ -297,13 +308,14 @@ wire                     aclint_mtimer_wake_lf;
 // ahb_sram_controller used by the legacy hiperf flow.  The ROM and SRAM_X
 // memory macros are wired directly to it through the rom_*/sram_* ports.
 //
-ahb_interconnect_fused #(.NR_M         (1),                 // Number of non-executable AHB Managers
-                         .NR_S_X_ROM   (1),                 // Number of fused ROM controllers
-                         .NR_S_X_SRAM  (1),                 // Number of fused SRAM controllers
-                         .NR_S_NX      (5),                 // Number of AHB Subordinates in non-executable space (SRAM-NX + 3 periph + ACLINT)
-                         .HAUSER_W     (HAUSER_W),          // Width of the HAUSER bus (min value is 1)
-                         .FIXED_B_PRIO (FIXED_B_PRIO),      // Arbitration scheme: 0=round-robin, 1=fixed Port-B priority
-                         .ASYNC_RST_EN (ASYNC_RST_EN)       // Reset architecture: 1=async active-low (default), 0=synchronous
+ahb_interconnect_fused #(.NR_M             (1),                 // Number of non-executable AHB Managers
+                         .NR_S_X_ROM       (0),                 // No ROM controllers (ROM-less executable space)
+                         .NR_S_X_SRAM      (2),                 // Two fused SRAM controllers: pmem @0x20000000 + SRAM_X @0x80000000
+                         .NR_S_NX          (5),                 // Number of AHB Subordinates in non-executable space (SRAM-NX + 3 periph + ACLINT)
+                         .M_NX_HMASTER_TAG (4'h8),              // Data port tag (data_hmaster_o) on HMASTER[3]
+                         .HAUSER_W         (HAUSER_W),          // Width of the HAUSER bus (min value is 1)
+                         .FIXED_B_PRIO     (FIXED_B_PRIO),      // Arbitration scheme: 0=round-robin, 1=fixed Port-B priority
+                         .ASYNC_RST_EN     (ASYNC_RST_EN)       // Reset architecture: 1=async active-low (default), 0=synchronous
                         )               ahb_interconnect_inst (
 
 // AHB CLOCK & RESET
@@ -330,6 +342,7 @@ ahb_interconnect_fused #(.NR_M         (1),                 // Number of non-exe
     .m_nx_haddr_i          ( m_nx_haddr_i                              ),
     .m_nx_hauser_i         ( m_nx_hsmode_i                             ),
     .m_nx_hburst_i         ( m_nx_hburst_i                             ),
+    .m_nx_hmaster_i        ({m_nx_hmaster_i, 3'b000}                   ),
     .m_nx_hmastlock_i      ( m_nx_hmastlock_i                          ),
     .m_nx_hprot_i          ( m_nx_hprot_i                              ),
     .m_nx_hsize_i          ( m_nx_hsize_i                              ),
@@ -352,19 +365,21 @@ ahb_interconnect_fused #(.NR_M         (1),                 // Number of non-exe
     .s_x_decoder_1hot_i    ( s_x_decoder_1hot[1:0]                     ),
     .s_x_decoder_addr_o    ( s_x_decoder_addr                          ),
 
-// FUSED ROM CONTROLLER MEMORY INTERFACE  (slot 0 = low decoder bit)
-    .rom_dout_i            ( rom0_dout                                 ),
-    .rom_addr_o            ( rom0_addr_full                            ),
-    .rom_cen_o             ( rom0_cen                                  ),
-    .rom_clk_o             ( rom0_clk                                  ),
+// FUSED ROM CONTROLLER MEMORY INTERFACE  (NR_S_X_ROM=0 -> none; rom_dout_i is the
+//   unused padded input, the rom_*_o outputs are driven to 0 internally and sunk here)
+    .rom_dout_i            ( 32'b0                                     ),
+    .rom_addr_o            ( rom_addr_o_unused                         ),
+    .rom_cen_o             ( rom_cen_o_unused                          ),
+    .rom_clk_o             ( rom_clk_o_unused                          ),
 
-// FUSED SRAM CONTROLLER MEMORY INTERFACE (slot 1 = high decoder bit)
-    .sram_dout_i           ( sram_x_dout                               ),
-    .sram_addr_o           ( sram_x_addr_full                          ),
-    .sram_cen_o            ( sram_x_cen                                ),
-    .sram_clk_o            ( sram_x_clk                                ),
-    .sram_din_o            ( sram_x_din                                ),
-    .sram_wen_o            ( sram_x_wen                                ),
+// FUSED SRAM CONTROLLER MEMORY INTERFACE (2 slots; j=0 low bits = pmem @0x20000000,
+//   j=1 high bits = SRAM_X @0x80000000 -- matches decoder bits [0],[1] respectively)
+    .sram_dout_i           ( {sram_x_dout,      pmem_dout}             ),
+    .sram_addr_o           ( {sram_x_addr_full, pmem_addr_full}        ),
+    .sram_cen_o            ( {sram_x_cen,       pmem_cen}              ),
+    .sram_clk_o            ( {sram_x_clk,       pmem_clk}              ),
+    .sram_din_o            ( {sram_x_din,       pmem_din}              ),
+    .sram_wen_o            ( {sram_x_wen,       pmem_wen}              ),
 
 // NON-EXECUTABLE AHB SUBORDINATE INTERFACES
     .s_nx_hrdata_i         ({s_aclint_hrdata,    s_periph2_hrdata,    s_periph1_hrdata,    s_periph0_hrdata,    s_sram_nx_hrdata    }),
@@ -386,7 +401,7 @@ ahb_interconnect_fused #(.NR_M         (1),                 // Number of non-exe
 
 // Slice the fused fabric's 30-bit word address down to each macro's
 // physical address width.
-assign rom0_addr   = rom0_addr_full  [ROM_ADDRW-1:0];
+assign pmem_addr   = pmem_addr_full  [ROM_ADDRW-1:0];
 assign sram_x_addr = sram_x_addr_full[SRAM_X_ADDRW-1:0];
 
 
@@ -410,21 +425,25 @@ ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM
 
 
 //=============================================================================
-// 4)  ROM MEMORY
+// 4)  PROGRAM MEMORY (executable slot 0 @ 0x20000000)
 //=============================================================================
-//   The AHB-side ROM controller is fused inside ahb_interconnect_fused;
-//   only the physical ROM macro lives here.
+//   Writable init-at-config SRAM (pmem_32kb) so a debugger can
+//   load firmware here over SBA while the board still self-boots the preloaded
+//   image. The AHB-side controller is fused inside ahb_interconnect_fused; only
+//   the physical macro lives here.
 
-rom_32kb #(.MEM_ADDRW(ROM_ADDRW), .ASYNC_RST_EN(ASYNC_RST_EN)) rom_inst0 (
+pmem_32kb #(.MEM_ADDRW(ROM_ADDRW), .ASYNC_RST_EN(ASYNC_RST_EN)) pmem_inst0 (
 
 // OUTPUTs
-    .rom_dout_o            ( rom0_dout                                 ),
+    .pmem_dout_o           ( pmem_dout                                 ),
 
 // INPUTs
-    .rom_addr_i            ( rom0_addr                                 ),
-    .rom_cen_i             ( rom0_cen                                  ),
-    .rom_clk_i             ( rom0_clk                                  ),
-    .rom_rst_i             ( hresetn_i                                 )
+    .pmem_addr_i           ( pmem_addr                                 ),
+    .pmem_cen_i            ( pmem_cen                                  ),
+    .pmem_clk_i            ( pmem_clk                                  ),
+    .pmem_rst_i            ( hresetn_i                                 ),
+    .pmem_din_i            ( pmem_din                                  ),
+    .pmem_wen_i            ( pmem_wen                                  )
 );
 
 
@@ -636,11 +655,14 @@ ahb_periph_example #(.ASYNC_RST_EN(ASYNC_RST_EN)) ahb_periph_example_inst2 (
 ahb_aclint #(.SU_MODE_EN    (1),                       // S-mode software IRQ (SSWI) present; match core SU_MODE_EN
              .NUM_HARTS     (1),                       // Single hart
              .PRIV_CHECK_EN (0),                       // Fabric-policed; hprot_i/hsmode_i accepted but ignored
+             .LF_SYNC_EN    (1),                       // here the MTIME counter lives (0: real clk_lf_i clock domain, 1: hclk_aon_i clock domain)
              .ASYNC_RST_EN  (ASYNC_RST_EN))      ahb_aclint_inst (
 
 // AHB CLOCK, RESET & WAKEUP
     .hclk_i                ( hclk_i                                    ),
     .hclk_aon_i            ( hclk_aon_i                                ),
+    .hclk_aon_en_i         ( 1'b1                                      ),  // hclk_aon_i is free-running in this example (no deep-sleep oscillator controller)
+    .scan_mode_i           ( 1'b0                                      ),  // functional mode; no DFT insertion at this level
     .hresetn_i             ( hresetn_i                                 ),
     .hclk_en_o             ( s_aclint_hclk_en                          ),
     .mtimer_wake_lf_o      ( aclint_mtimer_wake_lf                     ),
@@ -708,7 +730,7 @@ wire              [24:0] s_periph0_haddr_31_7_unused   = s_periph0_haddr[31:7];
 wire              [24:0] s_periph1_haddr_31_7_unused   = s_periph1_haddr[31:7];
 wire              [24:0] s_periph2_haddr_31_7_unused   = s_periph2_haddr[31:7];
 wire              [15:0] s_aclint_haddr_31_16_unused   = s_aclint_haddr[31:16];
-wire              [16:0] rom0_addr_full_29_13_unused   = rom0_addr_full[29:13];
+wire              [16:0] pmem_addr_full_29_13_unused   = pmem_addr_full[29:13];
 wire              [16:0] sram_x_addr_full_29_13_unused = sram_x_addr_full[29:13];
 
 // Fully-unused subordinate sideband fields (sram_nx)

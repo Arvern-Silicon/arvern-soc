@@ -5,6 +5,8 @@ sim/rtl_sim/run/log
 sim/rtl_sim/run/simv
 sim/rtl_sim/run/stimulus.v
 sim/rtl_sim/run/tb_ahb_periph_example.vcd
+sim/rtl_sim/run/flat_lint.f
+sim/rtl_sim/run/obj_dir
 
 synthesis/synopsys/alib-52
 synthesis/synopsys/results*
@@ -16,3 +18,6 @@ synthesis/synopsys/*_d
 synthesis/synopsys/filenames.log
 synthesis/synopsys/clog*
 synthesis/synopsys/submit_syn.tcl
+
+lint/vc_static/results
+lint/vc_static/*_d

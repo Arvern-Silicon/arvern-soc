@@ -37,7 +37,7 @@ fi
 ###############################################################################
 #              Flatten the submit filelist (resolve nested -f)                #
 ###############################################################################
-# Resolve the IPs' nested -f includes (e.g. the shared arv_common library) to
+# Resolve the IPs' nested -f includes (e.g. the shared arv_primitives library) to
 # absolute paths and drop duplicate sources, so the simulator sees a clean,
 # self-contained list regardless of cwd. Falls back to the raw file if the
 # flattener can't be found.

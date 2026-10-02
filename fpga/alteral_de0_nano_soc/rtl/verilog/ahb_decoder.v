@@ -29,7 +29,7 @@ module  ahb_decoder #(
 // AHB DECODER
 //=============================================================================
 
-assign decoder_1hot_o[0]  = (decoder_addr_i>=32'h20000000) & (decoder_addr_i<(32'h20000000+ROM_SIZE    )); //   ROM/FLASH
+assign decoder_1hot_o[0]  = (decoder_addr_i>=32'h20000000) & (decoder_addr_i<(32'h20000000+ROM_SIZE    )); //   Program SRAM (writable)
 assign decoder_1hot_o[1]  = (decoder_addr_i>=32'h80000000) & (decoder_addr_i<(32'h80000000+SRAM_X_SIZE )); //   Executable SRAM
 assign decoder_1hot_o[2]  = (decoder_addr_i>=32'h81000000) & (decoder_addr_i<(32'h81000000+SRAM_NX_SIZE)); //   Non-executable SRAM
 assign decoder_1hot_o[3]  = (decoder_addr_i>=32'h10040000) & (decoder_addr_i<(32'h10040080             )); //   128B AHB PERIPH #0

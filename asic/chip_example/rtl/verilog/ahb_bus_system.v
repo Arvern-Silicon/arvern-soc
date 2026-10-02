@@ -39,6 +39,10 @@ module  ahb_bus_system #(
     input  wire              hresetn_i,
     output wire              hclk_en_o,
 
+// DFT
+//======================================
+    input  wire              scan_mode_i,           // 1 = test mode (ACLINT: reset-synchroniser and clock-as-data bypass)
+
 // EXECUTABLE AHB BUS MANAGER INTERFACE
 //========================================
     input  wire       [31:0] m_x_haddr_i,
@@ -63,6 +67,7 @@ module  ahb_bus_system #(
     input  wire        [3:0] m_nx_hprot_i,
     input  wire        [2:0] m_nx_hsize_i,
     input  wire              m_nx_hsmode_i,
+    input  wire              m_nx_hmaster_i,
     input  wire        [1:0] m_nx_htrans_i,
     input  wire       [31:0] m_nx_hwdata_i,
     input  wire              m_nx_hwrite_i,
@@ -156,10 +161,14 @@ module  ahb_bus_system #(
 
 // Local parameters
 localparam               ROM_ADDRW      = $clog2(ROM_SIZE)-2;     // Address width of the ROM memory instance (32b words)
-localparam               ROM_HADDRW     = $clog2(ROM_SIZE);       // Address width of the ROM AHB interface (8b words)
+`ifndef FUSED
+localparam               ROM_HADDRW     = $clog2(ROM_SIZE);       // ROM AHB interface width (non-FUSED standalone controller)
+`endif
 
 localparam               SRAM_X_ADDRW   = $clog2(SRAM_X_SIZE)-2;  // Address width of the Executable SRAM memory instance (32b words)
-localparam               SRAM_X_HADDRW  = $clog2(SRAM_X_SIZE);    // Address width of the Executable SRAM AHB interface (8b words)
+`ifndef FUSED
+localparam               SRAM_X_HADDRW  = $clog2(SRAM_X_SIZE);    // Executable SRAM AHB interface width (non-FUSED standalone controller)
+`endif
 
 localparam               SRAM_NX_ADDRW  = $clog2(SRAM_NX_SIZE)-2; // Address width of the Non-executable SRAM memory instance (32b words)
 localparam               SRAM_NX_HADDRW = $clog2(SRAM_NX_SIZE);   // Address width of the Non-executable SRAM AHB interface (8b words)
@@ -167,14 +176,35 @@ localparam               SRAM_NX_HADDRW = $clog2(SRAM_NX_SIZE);   // Address wid
 localparam               HAUSER_W       = 1;                      // Width of the HAUSER bus (min value is 1)
 
 // Arbiter Interface
+// m_nx grant/request are consumed only by the advanced interconnect variants
+// (HIPERF multi-layer arbiter and FUSED); the default interconnect does not use
+// them, so declare them only for those configs to keep the default build clean.
+`ifdef HIPERF
 wire                     m_nx_grant;
 wire                     m_nx_request;
+`elsif FUSED
+wire                     m_nx_grant;
+wire                     m_nx_request;
+`endif
+// m_grant/m_request drive the default single-layer arbiter only; HIPERF/FUSED
+// have a single NX master (no arbitration), so declare them default-only.
+`ifndef HIPERF
+`ifndef FUSED
 wire               [1:0] m_grant;
 wire               [1:0] m_request;
+`endif
+`endif
 
 // Address Decoder Interface
+// s_x_decoder_* feed the executable-space decoder used only by the HIPERF/FUSED
+// interconnect variants; the default interconnect uses s_decoder_* below only.
+`ifdef HIPERF
 wire               [6:0] s_x_decoder_1hot;
 wire              [31:0] s_x_decoder_addr;
+`elsif FUSED
+wire               [6:0] s_x_decoder_1hot;
+wire              [31:0] s_x_decoder_addr;
+`endif
 wire               [6:0] s_decoder_1hot;
 wire              [31:0] s_decoder_addr;
 
@@ -298,7 +328,9 @@ wire              [31:0] rom0_dout;
 wire     [ROM_ADDRW-1:0] rom0_addr;
 wire                     rom0_cen;
 wire                     rom0_clk;
-wire              [29:0] rom0_addr_full_w;
+`ifdef FUSED
+wire              [29:0] rom0_addr_full_w;   // FUSED-only: sliced to rom0_addr in the FUSED branch
+`endif
 
 // Executable SRAM Interface
 wire              [31:0] sram_x_dout;
@@ -307,7 +339,9 @@ wire                     sram_x_cen;
 wire                     sram_x_clk;
 wire              [31:0] sram_x_din;
 wire               [3:0] sram_x_wen;
-wire              [29:0] sram_x_addr_full_w;
+`ifdef FUSED
+wire              [29:0] sram_x_addr_full_w;  // FUSED-only: sliced to sram_x_addr in the FUSED branch
+`endif
 
 // Non-executable SRAM Interface
 wire              [31:0] sram_nx_dout;
@@ -326,6 +360,7 @@ wire                     s_periph0_hclk_en;
 wire                     s_periph1_hclk_en;
 wire                     s_periph2_hclk_en;
 wire                     s_aclint_hclk_en;
+wire                     aclint_mtimer_wake_lf;   // ACLINT deep-sleep wake (unused: no power controller)
 
 
 //=============================================================================
@@ -333,11 +368,12 @@ wire                     s_aclint_hclk_en;
 //=============================================================================
 `ifdef HIPERF
 
-ahb_interconnect_hiperf #(.NR_M        (1),           // Number of non-executable AHB Managers
-                          .NR_S_X      (2),           // Number of AHB Subordinates in executable space
-                          .NR_S_NX     (5),           // Number of AHB Subordinates in non-executable space (SRAM-NX + 3 periph + ACLINT)
-                          .HAUSER_W    (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
-                          .ASYNC_RST_EN(ASYNC_RST_EN) // 1=async active-low reset, 0=synchronous reset
+ahb_interconnect_hiperf #(.NR_M             (1),           // Number of non-executable AHB Managers
+                          .NR_S_X           (2),           // Number of AHB Subordinates in executable space
+                          .NR_S_NX          (5),           // Number of AHB Subordinates in non-executable space (SRAM-NX + 3 periph + ACLINT)
+                          .M_NX_HMASTER_TAG (4'h8),        // Data port tag (data_hmaster_o) on HMASTER[3]
+                          .HAUSER_W         (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
+                          .ASYNC_RST_EN     (ASYNC_RST_EN) // 1=async active-low reset, 0=synchronous reset
                          )               ahb_interconnect_inst (
 
 // AHB CLOCK & RESET
@@ -364,6 +400,7 @@ ahb_interconnect_hiperf #(.NR_M        (1),           // Number of non-executabl
     .m_nx_haddr_i          ( m_nx_haddr_i                              ),
     .m_nx_hauser_i         ( m_nx_hsmode_i                             ),
     .m_nx_hburst_i         ( m_nx_hburst_i                             ),
+    .m_nx_hmaster_i        ({m_nx_hmaster_i, 3'b000}                   ),
     .m_nx_hmastlock_i      ( m_nx_hmastlock_i                          ),
     .m_nx_hprot_i          ( m_nx_hprot_i                              ),
     .m_nx_hsize_i          ( m_nx_hsize_i                              ),
@@ -427,13 +464,14 @@ ahb_interconnect_hiperf #(.NR_M        (1),           // Number of non-executabl
 //=============================================================================
 `elsif FUSED
 
-ahb_interconnect_fused #(.NR_M         (1),           // Number of non-executable AHB Managers
-                         .NR_S_X_ROM   (1),           // Number of fused ROM controllers
-                         .NR_S_X_SRAM  (1),           // Number of fused SRAM controllers
-                         .NR_S_NX      (5),           // Number of non-executable subordinates (SRAM-NX + 3 periph + ACLINT)
-                         .HAUSER_W     (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
-                         .FIXED_B_PRIO (1'b1) ,       // Arbitration scheme for fused ROM/SRAM controllers (0=round-robin, 1=fixed Port-B priority
-                         .ASYNC_RST_EN (ASYNC_RST_EN) // 1=async active-low reset, 0=synchronous reset
+ahb_interconnect_fused #(.NR_M             (1),           // Number of non-executable AHB Managers
+                         .NR_S_X_ROM       (1),           // Number of fused ROM controllers
+                         .NR_S_X_SRAM      (1),           // Number of fused SRAM controllers
+                         .NR_S_NX          (5),           // Number of non-executable subordinates (SRAM-NX + 3 periph + ACLINT)
+                         .M_NX_HMASTER_TAG (4'h8),        // Data port tag (data_hmaster_o) on HMASTER[3]
+                         .HAUSER_W         (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
+                         .FIXED_B_PRIO     (1'b1) ,       // Arbitration scheme for fused ROM/SRAM controllers (0=round-robin, 1=fixed Port-B priority
+                         .ASYNC_RST_EN     (ASYNC_RST_EN) // 1=async active-low reset, 0=synchronous reset
                         )               ahb_interconnect_inst (
 
 // AHB CLOCK & RESET
@@ -460,6 +498,7 @@ ahb_interconnect_fused #(.NR_M         (1),           // Number of non-executabl
     .m_nx_haddr_i          ( m_nx_haddr_i                              ),
     .m_nx_hauser_i         ( m_nx_hsmode_i                             ),
     .m_nx_hburst_i         ( m_nx_hburst_i                             ),
+    .m_nx_hmaster_i        ({m_nx_hmaster_i, 3'b000}                   ),
     .m_nx_hmastlock_i      ( m_nx_hmastlock_i                          ),
     .m_nx_hprot_i          ( m_nx_hprot_i                              ),
     .m_nx_hsize_i          ( m_nx_hsize_i                              ),
@@ -531,10 +570,11 @@ assign s_sram_x_hclk_en = 1'b0;
 //=============================================================================
 `else
 
-ahb_interconnect_generic #(.NR_M        (2),           // Number of AHB Managers
-                           .NR_S        (7),           // Number of AHB Subordinates (ROM + SRAM-X + SRAM-NX + 3 periph + ACLINT)
-                           .HAUSER_W    (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
-                           .ASYNC_RST_EN(ASYNC_RST_EN) // 1=async active-low reset, 0=synchronous reset
+ahb_interconnect_generic #(.NR_M          (2),           // Number of AHB Managers
+                           .NR_S          (7),           // Number of AHB Subordinates (ROM + SRAM-X + SRAM-NX + 3 periph + ACLINT)
+                           .M_HMASTER_TAG (8'h80),       // Data port tag (data_hmaster_o) on HMASTER[3]
+                           .HAUSER_W      (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
+                           .ASYNC_RST_EN  (ASYNC_RST_EN) // 1=async active-low reset, 0=synchronous reset
 )                                        ahb_interconnect_generic_inst (
 
 // AHB CLOCK & RESET
@@ -544,19 +584,20 @@ ahb_interconnect_generic #(.NR_M        (2),           // Number of AHB Managers
     .hclk_en_o             ( interconnect_hclk_en                      ),
 
 // AHB MANAGER INTERFACES
-    .m_haddr_i             ({m_nx_haddr_i,       m_x_haddr_i          }),
-    .m_hauser_i            ({m_nx_hsmode_i,      m_x_hsmode_i         }),
-    .m_hburst_i            ({m_nx_hburst_i,      m_x_hburst_i         }),
-    .m_hmastlock_i         ({m_nx_hmastlock_i,   m_x_hmastlock_i      }),
-    .m_hprot_i             ({m_nx_hprot_i,       m_x_hprot_i          }),
-    .m_hsize_i             ({m_nx_hsize_i,       m_x_hsize_i          }),
-    .m_htrans_i            ({m_nx_htrans_i,      m_x_htrans_i         }),
-    .m_hwdata_i            ({m_nx_hwdata_i,      m_x_hwdata_i         }),
-    .m_hwrite_i            ({m_nx_hwrite_i,      m_x_hwrite_i         }),
+    .m_haddr_i             ({m_nx_haddr_i,           m_x_haddr_i      }),
+    .m_hauser_i            ({m_nx_hsmode_i,          m_x_hsmode_i     }),
+    .m_hburst_i            ({m_nx_hburst_i,          m_x_hburst_i     }),
+    .m_hmaster_i           ({m_nx_hmaster_i, 3'b000, 4'h0             }),
+    .m_hmastlock_i         ({m_nx_hmastlock_i,       m_x_hmastlock_i  }),
+    .m_hprot_i             ({m_nx_hprot_i,           m_x_hprot_i      }),
+    .m_hsize_i             ({m_nx_hsize_i,           m_x_hsize_i      }),
+    .m_htrans_i            ({m_nx_htrans_i,          m_x_htrans_i     }),
+    .m_hwdata_i            ({m_nx_hwdata_i,          m_x_hwdata_i     }),
+    .m_hwrite_i            ({m_nx_hwrite_i,          m_x_hwrite_i     }),
 
-    .m_hrdata_o            ({m_nx_hrdata_o,      m_x_hrdata_o         }),
-    .m_hready_o            ({m_nx_hready_o,      m_x_hready_o         }),
-    .m_hresp_o             ({m_nx_hresp_o,       m_x_hresp_o          }),
+    .m_hrdata_o            ({m_nx_hrdata_o,          m_x_hrdata_o     }),
+    .m_hready_o            ({m_nx_hready_o,          m_x_hready_o     }),
+    .m_hresp_o             ({m_nx_hresp_o,           m_x_hresp_o      }),
 
 // ARBITER INTERFACES
     .m_grant_i             ( m_grant                                   ),
@@ -917,14 +958,17 @@ ahb_periph_example #(.ASYNC_RST_EN(ASYNC_RST_EN)) ahb_periph_example_inst2 (
 ahb_aclint #(.SU_MODE_EN    (1),                       // S-mode software IRQ (SSWI) present; match core SU_MODE_EN
              .NUM_HARTS     (1),                       // Single hart
              .PRIV_CHECK_EN (0),                       // Fabric-policed; hprot_i/hsmode_i accepted but ignored
+             .LF_SYNC_EN    (0),                       // here the MTIME counter lives (0: real clk_lf_i clock domain, 1: hclk_aon_i clock domain)
              .ASYNC_RST_EN  (ASYNC_RST_EN)) ahb_aclint_inst ( // 1=async active-low reset, 0=synchronous reset
 
 // AHB CLOCK, RESET & WAKEUP
     .hclk_i                ( hclk_i                                    ),
     .hclk_aon_i            ( hclk_aon_i                                ),
+    .hclk_aon_en_i         ( 1'b1                                      ),  // hclk_aon_i is free-running in this example (no deep-sleep oscillator controller)
+    .scan_mode_i           ( scan_mode_i                               ),
     .hresetn_i             ( hresetn_i                                 ),
     .hclk_en_o             ( s_aclint_hclk_en                          ),
-    .mtimer_wake_lf_o      (                                           ), // No deep-sleep power controller in this example
+    .mtimer_wake_lf_o      ( aclint_mtimer_wake_lf                     ), // No deep-sleep power controller (sunk in LINT CLEANUP)
 
 // LOW-FREQUENCY CLOCK & RESET
     .clk_lf_i              ( clk_lf_i                                  ),
@@ -969,6 +1013,45 @@ assign  hclk_en_o       =   interconnect_hclk_en  |
                             s_periph2_hclk_en     |
                             s_aclint_hclk_en      ;
 
+
+//=============================================================================
+// LINT CLEANUP
+//=============================================================================
+// Per-subordinate AHB sideband that this interconnect drives but the on-chip
+// ROM / SRAM / peripheral / ACLINT slaves do not consume: burst / master /
+// lock / prot / user, plus the upper address-decode bits above each slave's own
+// address span. Reviewed as genuinely unused and sunk into named *_unused nets
+// (a name containing "unused" also documents intent and suppresses the meta
+// UNUSEDSIGNAL on the sink net itself).
+// s_rom_* and s_sram_x_* exist only in the non-FUSED configs (in FUSED the
+// executable subordinates are embedded inside ahb_interconnect_fused).
+`ifndef FUSED
+wire  s_rom_sideband_unused     = |{1'b0, s_rom_haddr,     s_rom_hauser,     s_rom_hburst,     s_rom_hmaster,     s_rom_hmastlock,     s_rom_hprot    };
+wire  s_sram_x_sideband_unused  = |{1'b0, s_sram_x_haddr,  s_sram_x_hauser,  s_sram_x_hburst,  s_sram_x_hmaster,  s_sram_x_hmastlock,  s_sram_x_hprot };
+`endif
+wire  s_sram_nx_sideband_unused = |{1'b0, s_sram_nx_haddr, s_sram_nx_hauser, s_sram_nx_hburst, s_sram_nx_hmaster, s_sram_nx_hmastlock, s_sram_nx_hprot};
+wire  s_periph0_sideband_unused = |{1'b0, s_periph0_haddr, s_periph0_hburst, s_periph0_hmaster, s_periph0_hmastlock};
+wire  s_periph1_sideband_unused = |{1'b0, s_periph1_haddr, s_periph1_hburst, s_periph1_hmaster, s_periph1_hmastlock};
+wire  s_periph2_sideband_unused = |{1'b0, s_periph2_haddr, s_periph2_hburst, s_periph2_hmaster, s_periph2_hmastlock};
+wire  s_aclint_sideband_unused  = |{1'b0, s_aclint_haddr,  s_aclint_hburst,  s_aclint_hmaster,  s_aclint_hmastlock};
+
+// ACLINT deep-sleep wake output: no power controller in this example.
+wire  aclint_mtimer_wake_lf_unused = aclint_mtimer_wake_lf;
+
+// HIPERF/FUSED only: the executable-space decoder one-hot is 7 bits wide but only
+// the low 2 (ROM, SRAM-X) are decoded; the upper bits are unused.
+`ifdef HIPERF
+wire  s_x_decoder_1hot_unused = |{1'b0, s_x_decoder_1hot[6:2]};
+`elsif FUSED
+wire  s_x_decoder_1hot_unused = |{1'b0, s_x_decoder_1hot[6:2]};
+`endif
+
+// FUSED only: the fused controllers emit a 30-bit address; only the low bits
+// within each memory's own span are used, the upper decode bits are unused.
+`ifdef FUSED
+wire  rom0_addr_full_unused   = |{1'b0, rom0_addr_full_w  [29:ROM_ADDRW]   };
+wire  sram_x_addr_full_unused = |{1'b0, sram_x_addr_full_w[29:SRAM_X_ADDRW]};
+`endif
 
 
 endmodule

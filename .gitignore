@@ -13,3 +13,7 @@ __pycache__/
 
 # Eclipse / Nios II workspace metadata (vendor demo trees)
 .metadata/
+
+# CLion / CMake
+cmake-build-*/
+.idea

@@ -1,0 +1,221 @@
+#!/bin/bash
+
+#==============================================================================
+# Script: run_lint
+# Purpose: Run Verilator linting on the chip_example ASIC RTL design
+# Usage: run_lint [OPTIONS] [top_module]
+#
+# The chip_example design filelist (rtl/verilog/filelist.f) is the single source
+# of truth and is shared with synthesis (run_syn flattens the same list). The
+# on-chip memory macro wrapper is a foundry cell supplied to synthesis via
+# $SRAM_VERILOG_WRAPPER and is intentionally NOT in the design filelist; for a
+# standalone lint we add the behavioral stand-in bench/verilog/sram_8kb_wrapper.v.
+#
+# The ahb_bus_system interconnect has three build-time variants selected by
+# preprocessor macros: the default single-layer interconnect, HIPERF (multi-layer,
+# +define+HIPERF) and FUSED (fused ROM/SRAM controller, +define+FUSED). A bare
+# run_lint lints ALL three variants in sequence (the safest default); use
+# -default / -fahb / -hiperf to restrict the run to a single variant.
+#==============================================================================
+
+# Default configuration
+DEFAULT_TOP="chip_example"
+DEFAULT_FILELIST="../../../rtl/verilog/filelist.f"
+DEFAULT_WAIVERS="waivers.vlt"
+MEM_MODEL="../../../bench/verilog/sram_8kb_wrapper.v"
+
+# Parse command line options
+TOP_MODULE="$DEFAULT_TOP"
+FILELIST="$DEFAULT_FILELIST"
+WAIVERS="$DEFAULT_WAIVERS"
+EXTRA_FLAGS=""
+VERBOSE=0
+NO_WAIVERS=0
+SEL_DEFAULT=0
+SEL_FAHB=0
+SEL_HIPERF=0
+SEL_ALL=0
+
+usage() {
+    cat << EOF
+Usage: $0 [OPTIONS] [top_module]
+
+Run Verilator lint checking on the chip_example ASIC RTL design.
+
+Arguments:
+    top_module          Top-level module name (default: $DEFAULT_TOP)
+
+Options:
+    -default            Lint only the default single-layer interconnect
+    -fahb               Lint the FUSED interconnect variant (+define+FUSED)
+    -hiperf             Lint the HIPERF interconnect variant (+define+HIPERF)
+    -all                Lint every interconnect variant (default + FUSED + HIPERF)
+                        -- this is also what a bare run_lint does
+    -f, --filelist FILE Specify filelist (default: $DEFAULT_FILELIST)
+    -w, --waivers FILE  Specify waivers file (default: $DEFAULT_WAIVERS)
+    -n, --no-waivers    Ignore waivers file
+    -e, --extra FLAGS   Additional Verilator flags (quoted string)
+    -v, --verbose       Verbose output
+    -h, --help          Show this help message
+
+Examples:
+    $0                           # Lint every variant (default + FUSED + HIPERF)
+    $0 -default                  # Lint only the default interconnect
+    $0 -fahb                     # Lint only the FUSED variant
+    $0 -e "-GDEBUG_EN=0"         # Lint the debug-off configuration (all variants)
+
+EOF
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -default)
+            SEL_DEFAULT=1
+            shift
+            ;;
+        -fahb)
+            SEL_FAHB=1
+            shift
+            ;;
+        -hiperf)
+            SEL_HIPERF=1
+            shift
+            ;;
+        -all)
+            SEL_ALL=1
+            shift
+            ;;
+        -f|--filelist)
+            FILELIST="$2"
+            shift 2
+            ;;
+        -w|--waivers)
+            WAIVERS="$2"
+            shift 2
+            ;;
+        -n|--no-waivers)
+            NO_WAIVERS=1
+            shift
+            ;;
+        -e|--extra)
+            EXTRA_FLAGS="$2"
+            shift 2
+            ;;
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option: $1"
+            echo "Use -h or --help for usage information"
+            exit 1
+            ;;
+        *)
+            # Assume it's the top module name
+            TOP_MODULE="$1"
+            shift
+            ;;
+    esac
+done
+
+# Check if required files exist
+if [ ! -f "$FILELIST" ]; then
+    echo "Error: Filelist not found: $FILELIST"
+    exit 1
+fi
+
+# Build the list of interconnect configs to lint ("label:+define+...").
+# A bare run_lint (or -all) lints every variant; -default/-fahb/-hiperf restrict
+# the run to the selected subset.
+CONFIGS=()
+if [ $SEL_ALL -eq 1 ]; then
+    CONFIGS=("default:" "fused:+define+FUSED" "hiperf:+define+HIPERF")
+else
+    [ $SEL_DEFAULT -eq 1 ] && CONFIGS+=("default:")
+    [ $SEL_FAHB    -eq 1 ] && CONFIGS+=("fused:+define+FUSED")
+    [ $SEL_HIPERF  -eq 1 ] && CONFIGS+=("hiperf:+define+HIPERF")
+    # No explicit variant selected => lint every variant (the default).
+    [ ${#CONFIGS[@]} -eq 0 ] && CONFIGS=("default:" "fused:+define+FUSED" "hiperf:+define+HIPERF")
+fi
+
+# Build waivers argument
+WAIVERS_ARG=""
+if [ $NO_WAIVERS -eq 0 ] && [ -f "$WAIVERS" ]; then
+    WAIVERS_ARG="$WAIVERS"
+    [ $VERBOSE -eq 1 ] && echo "Using waivers file: $WAIVERS"
+elif [ $NO_WAIVERS -eq 0 ] && [ ! -f "$WAIVERS" ]; then
+    echo "Warning: Waivers file not found: $WAIVERS (continuing without waivers)"
+fi
+
+# Flatten the filelist ONCE: resolve nested -f includes (the IPs' arv_primitives
+# pull) to absolute paths and drop duplicate sources, so Verilator sees a clean,
+# self-contained list regardless of cwd. This is the SAME shared flattener the
+# synthesis flow uses (run_syn). All interconnect variants share one file list;
+# they differ only by preprocessor define. Falls back to the raw list if absent.
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+FLATTEN="$SCRIPT_DIR/../../../../../../arvern/sim/rtl_sim/bin/flatten_filelist.py"
+FLAT_FILELIST="./flat_lint.f"
+if [ -f "$FLATTEN" ]; then
+    python3 "$FLATTEN" "$FILELIST" "$FLAT_FILELIST"
+    FILELIST="$FLAT_FILELIST"
+else
+    echo "Warning: flatten_filelist.py not found at $FLATTEN; using raw filelist (nested -f may not resolve)."
+fi
+
+# Lint each selected config; overall status fails if any config fails.
+OVERALL=0
+for cfg in "${CONFIGS[@]}"; do
+    LABEL="${cfg%%:*}"
+    DEFINES="${cfg#*:}"
+
+    echo ""
+    echo " ======================================================"
+    echo "|         LINT:          ${TOP_MODULE}  [${LABEL}]"
+    echo " ======================================================"
+    echo ""
+
+    VERILATOR_CMD="verilator --lint-only -Wall -Wpedantic --top $TOP_MODULE $MEM_MODEL"
+    [ -n "$WAIVERS_ARG" ] && VERILATOR_CMD="$VERILATOR_CMD $WAIVERS_ARG"
+    VERILATOR_CMD="$VERILATOR_CMD $DEFINES $EXTRA_FLAGS -f $FILELIST"
+
+    if [ $VERBOSE -eq 1 ]; then
+        echo "Configuration:"
+        echo "  Top module: $TOP_MODULE"
+        echo "  Variant:    $LABEL  (${DEFINES:-<default>})"
+        echo "  Filelist:   $FILELIST"
+        echo "  Waivers:    ${WAIVERS_ARG:-<none>}"
+        echo "  Mem model:  $MEM_MODEL"
+        echo "  Extra flags: ${EXTRA_FLAGS:-<none>}"
+        echo ""
+        echo "Running: $VERILATOR_CMD"
+        echo ""
+    fi
+
+    eval $VERILATOR_CMD
+    RC=$?
+
+    echo ""
+    if [ $RC -eq 0 ]; then
+        echo "Lint check PASSED  [${LABEL}]"
+    else
+        echo "Lint check FAILED  [${LABEL}] (exit code: $RC)"
+        OVERALL=1
+    fi
+    echo ""
+done
+
+if [ ${#CONFIGS[@]} -gt 1 ]; then
+    if [ $OVERALL -eq 0 ]; then
+        echo "All ${#CONFIGS[@]} configs PASSED"
+    else
+        echo "One or more configs FAILED"
+    fi
+    echo ""
+fi
+
+exit $OVERALL

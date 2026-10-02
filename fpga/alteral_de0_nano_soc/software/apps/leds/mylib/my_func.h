@@ -20,12 +20,12 @@
 #define  P1_IN0        P1_KEY_SW_VAL
 
 //----------------------------------------------------------
-// ACLINT MTIMER (machine timer), base 0x02004000 (single hart)
+// ACLINT MTIMER (machine timer), window 0x02004000-0x0200BFFF (single hart)
 //----------------------------------------------------------
 #define  MTIMECMP_LO   (*(volatile unsigned int *) 0x02004000)    // mtimecmp[0] low  word
 #define  MTIMECMP_HI   (*(volatile unsigned int *) 0x02004004)    // mtimecmp[0] high word
-#define  MTIME_LO      (*(volatile unsigned int *) 0x02004008)    // mtime low  word (read LO first: latches HI snapshot)
-#define  MTIME_HI      (*(volatile unsigned int *) 0x0200400C)    // mtime high word
+#define  MTIME_LO      (*(volatile unsigned int *) 0x0200BFF8)    // mtime low  word (read LO first: latches HI snapshot)
+#define  MTIME_HI      (*(volatile unsigned int *) 0x0200BFFC)    // mtime high word
 
 //----------------------------------------------------------
 // PERIPHERAL #1 (Unused)

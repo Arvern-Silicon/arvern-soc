@@ -181,8 +181,54 @@ my_pin_assignment   ADC_SCK          PIN_V10    "3.3-V LVTTL"
 my_pin_assignment   ADC_SDI          PIN_AC4    "3.3-V LVTTL"
 my_pin_assignment   ADC_SDO          PIN_AD4    "3.3-V LVTTL"
 
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ARDUINO_IO[14]
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ARDUINO_IO[15]
+# --- Debug-transport pad settings on the GPIO_1 (JP7) DTM pins ----------------
+# Cyclone V I/O offers a programmable weak pull-UP only (no internal pull-down).
+# DTM_TYPE is read straight from the RTL parameter so the two can't drift.
+#   0 = JTAG : IEEE 1149.1 pull-ups on TMS/TDI/TRST_N (+ TDO, floats when released)
+#   1 = UART : pull-up on RX so a disconnected line reads idle-high (TX is push-pull)
+#   2 = I2C  : SCL/SDA are open-drain and NON-FUNCTIONAL without a pull-up
+#   3 = cJTAG: bus-hold (keeper) on TCKC/TMSC; TMSC is undriven while TCKC is high
+
+# Extract the decimal value of a Verilog `parameter <name> = <n>;` from a source
+# file. Ignores comments (`//...`), instantiation lines (`.name(...)`) and any
+# `;` before the name. Returns $default if the file or parameter is not found.
+proc verilog_param {file name default} {
+    if {[catch {open $file r} fh]} {
+        post_message -type warning "verilog_param: cannot open $file - using $name=$default"
+        return $default
+    }
+    set txt [read $fh]
+    close $fh
+    set pat "parameter\\y\[^;/=\]*\\y${name}\\y\\s*=\\s*(\[0-9\]+)"
+    if {[regexp -line $pat $txt -> val]} { return $val }
+    post_message -type warning "verilog_param: $name not found in $file - using $default"
+    return $default
+}
+
+# cwd at run time is synthesis/altera/WORK (see 0_create_bitstream.sh), so the
+# top-level RTL is three levels up - the same path used for SEARCH_PATH above.
+set DTM_TYPE [verilog_param ../../../rtl/verilog/arvern_fpga.v DTM_TYPE 0]
+post_message "DTM debug transport: DTM_TYPE=$DTM_TYPE (from arvern_fpga.v)"
+
+if {$DTM_TYPE == 3} {
+    set_instance_assignment -name ENABLE_BUS_HOLD_CIRCUITRY ON -to GPIO_1[11]  ;# CJTAG_TMSC
+    set_instance_assignment -name ENABLE_BUS_HOLD_CIRCUITRY ON -to GPIO_1[10]  ;# CJTAG_TCKC
+
+} elseif {$DTM_TYPE == 2} {
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[7]   ;# I2C_SCL
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[8]   ;# I2C_SDA
+
+} elseif {$DTM_TYPE == 1} {
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[9]   ;# UART_RX
+
+} elseif {$DTM_TYPE == 0} {
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[1]   ;# JTAG_TMS
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[2]   ;# JTAG_TDI
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[3]   ;# JTAG_TRST_N
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[4]   ;# JTAG_TDO
+    # GPIO_1[0]/TCK ideally idles quiet (pull-down): not available internally on
+    # Cyclone V -> add an external resistor if a defined level is required.
+}
 
 # Commit assignments
 export_assignments

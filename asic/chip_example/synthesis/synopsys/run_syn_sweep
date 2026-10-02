@@ -1,0 +1,84 @@
+#!/bin/bash
+#
+# run_syn_sweep -- synthesize chip_example once per AHB fabric flavor and keep
+# the reports of every run under a named snapshot directory, so two snapshots
+# (e.g. before / after an RTL change in ahb_interconnect) can be compared with
+# summarize_timing.py.
+#
+# run_syn wipes ./results on every invocation, so this wrapper copies the text
+# reports out after each run into:
+#
+#     ./results_sweep/<tag>/<fabric>/
+#
+# (results* is gitignored). The large binaries (.ddc, .gate.v, .svf, .spf) are
+# not copied.
+#
+# Usage:
+#     ./run_syn_sweep -tag <name> [-fabric GENERIC,HIPERF,FUSED] [-lib <flavor>] [-local]
+#
+#     -tag     snapshot name (required), e.g. pre_fix / post_fix
+#     -fabric  comma-separated list, default all three
+#     -lib     library flavor passed through to run_syn
+#     -local   call ./run_syn directly instead of ./run_syn_d (docker)
+#
+# Runs are sequential (one license, one shared ./results directory).
+
+set -u
+cd "$(dirname "$(realpath "$0")")"
+
+TAG=""
+FABRICS="GENERIC,HIPERF,FUSED"
+LIB_ARG=""
+RUNNER="./run_syn_d"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -tag)    TAG="$2";      shift 2 ;;
+        -fabric) FABRICS="$2";  shift 2 ;;
+        -lib)    LIB_ARG="-lib $2"; shift 2 ;;
+        -local)  RUNNER="./run_syn"; shift ;;
+        *) echo "Unknown option: $1"; sed -n '2,25p' "$0"; exit 1 ;;
+    esac
+done
+if [[ -z "$TAG" ]]; then
+    echo "error: -tag <name> is required"; exit 1
+fi
+
+SNAP="./results_sweep/$TAG"
+mkdir -p "$SNAP"
+SWEEP_START=$SECONDS
+
+for FABRIC in ${FABRICS//,/ }; do
+    echo "=================================================================="
+    echo "  run_syn_sweep: tag=$TAG fabric=$FABRIC  ($(date))"
+    echo "=================================================================="
+    T0=$SECONDS
+    $RUNNER -fabric "$FABRIC" $LIB_ARG
+    RC=$?
+    ELAPSED=$(( SECONDS - T0 ))
+
+    DEST="$SNAP/$(echo "$FABRIC" | tr 'A-Z' 'a-z')"
+    rm -rf "$DEST"
+    mkdir -p "$DEST"
+    # Text reports only
+    for f in ./results/report.* ./results/synthesis.log; do
+        [[ -f "$f" ]] && cp "$f" "$DEST/"
+    done
+    {
+        echo "fabric=$FABRIC"
+        echo "tag=$TAG"
+        echo "date=$(date '+%Y-%m-%d %H:%M:%S')"
+        echo "elapsed_s=$ELAPSED"
+        echo "run_rc=$RC"
+        echo "arvern_ips_git=$(git -C ../../../../../arvern-ips rev-parse --short HEAD 2>/dev/null) $(git -C ../../../../../arvern-ips status --porcelain 2>/dev/null | grep -q . && echo dirty || echo clean)"
+        echo "arvern_git=$(git -C ../../../../../arvern rev-parse --short HEAD 2>/dev/null) $(git -C ../../../../../arvern status --porcelain 2>/dev/null | grep -q . && echo dirty || echo clean)"
+        echo "arvern_soc_git=$(git -C ../../../.. rev-parse --short HEAD 2>/dev/null) $(git -C ../../../.. status --porcelain 2>/dev/null | grep -q . && echo dirty || echo clean)"
+    } > "$DEST/run.info"
+
+    if [[ ! -f "$DEST/report.timing_summary" ]]; then
+        echo "WARNING: $FABRIC produced no report.timing_summary (rc=$RC) -- see $DEST/synthesis.log"
+    fi
+done
+
+echo ""
+echo "Sweep '$TAG' done in $(( (SECONDS - SWEEP_START) / 60 )) min. Snapshot: $SNAP"
+python3 ./summarize_timing.py "$TAG"

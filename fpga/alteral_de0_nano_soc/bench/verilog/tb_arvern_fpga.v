@@ -68,17 +68,18 @@ reg        [31:0] full_rom [0:8191];   // 32KB = 8192 x 32-bit words
 initial
   begin
      // Load flat memory image then distribute to 8KB banks
-     // ROM uses rom_32kb → 4x sram_8kb_wrapper → altsyncram (2048 words each)
+     // Program memory uses pmem_32kb → 4x altsyncram banks (2048 words each), now
+     // init-at-config AND writable.
      for (idx=0; idx < 8192; idx=idx+1) full_rom[idx] = 32'h00000000;
 
      #10 $readmemh("./pmem.mem", full_rom);
 
      for (idx=0; idx < 2048; idx=idx+1)
        begin
-          dut.ahb_bus_system_inst.rom_inst0.altsyncram_bank0.mem[idx] = full_rom[idx];
-          dut.ahb_bus_system_inst.rom_inst0.altsyncram_bank1.mem[idx] = full_rom[idx + 2048];
-          dut.ahb_bus_system_inst.rom_inst0.altsyncram_bank2.mem[idx] = full_rom[idx + 4096];
-          dut.ahb_bus_system_inst.rom_inst0.altsyncram_bank3.mem[idx] = full_rom[idx + 6144];
+          dut.ahb_bus_system_inst.pmem_inst0.altsyncram_bank0.mem[idx] = full_rom[idx];
+          dut.ahb_bus_system_inst.pmem_inst0.altsyncram_bank1.mem[idx] = full_rom[idx + 2048];
+          dut.ahb_bus_system_inst.pmem_inst0.altsyncram_bank2.mem[idx] = full_rom[idx + 4096];
+          dut.ahb_bus_system_inst.pmem_inst0.altsyncram_bank3.mem[idx] = full_rom[idx + 6144];
        end
   end
 

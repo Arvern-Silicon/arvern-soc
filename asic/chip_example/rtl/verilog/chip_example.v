@@ -23,6 +23,9 @@ module  chip_example (
     input  wire             free_clk_i,
     input  wire             hresetn_i,
 
+// DFT
+    input  wire             scan_mode_i,    // 1 = test mode: bypasses the reset synchronisers and clock-as-data paths. Tie 0 functionally
+
 // AHB Peripheral #0
     output wire      [31:0] periph0_reg_00_o,
     output wire      [31:0] periph0_reg_01_o,
@@ -104,7 +107,6 @@ module  chip_example (
 
 // NMI (Smrnmi)
     input  wire             nmi_i,
-    input  wire      [31:0] nmi_vector_i,
 
 // Lockup status
     output wire             lockup_o,
@@ -114,8 +116,22 @@ module  chip_example (
     input  wire             resetn_lf_i,
 
 // Platform HPM events (Zihpm)
-    input  wire       [7:0] hpm_platform_events_i
+    input  wire       [7:0] hpm_platform_events_i,
 
+// EXTERNAL DEBUG - JTAG Debug Transport Module (only meaningful when DEBUG_EN=1)
+    input  wire       [3:0] jtag_idcode_version_i,
+    input  wire             jtag_tck_i,
+    input  wire             jtag_trst_n_i,
+    input  wire             jtag_tms_i,
+    input  wire             jtag_tdi_i,
+    output wire             jtag_tdo_o,
+    output wire             jtag_tdo_oe_o,
+
+// EXTERNAL DEBUG - status / system hooks (all driven 0 when DEBUG_EN=0)
+    output wire             dbg_debug_mode_o,
+    output wire             dbg_halted_o,
+    output wire             dbg_stoptime_o,
+    output wire             dbg_ndmreset_o
 );
 
 
@@ -129,11 +145,10 @@ parameter                SRAM_X_SIZE  = 32*1024;  // Size of the Executable SRAM
 parameter                SRAM_NX_SIZE = 32*1024;  // Size of the Non-executable SRAM memory instance (in Bytes)
 
 // Clock / Reset
-wire                     dut_hclk;
+// This trial has no clock-gate cell (free_clk_i feeds every block directly), so
+// each block's hclk_en_o is captured but unused; see the LINT CLEANUP at the end.
 wire                     dut_hclk_en;
-wire                     system_hclk;
 wire                     system_hclk_en;
-wire                     ccsr_hclk;
 wire                     ccsr_hclk_en;
 
 // ACLINT -> core interrupt & time signals
@@ -170,6 +185,7 @@ wire                     data_hwrite;
 wire              [31:0] data_hrdata;
 wire                     data_hready;
 wire                     data_hresp;
+wire                     data_hmaster;
 
 // Interface between ORV core and CCSR unit
 wire              [10:0] ccsr_bank;
@@ -178,14 +194,25 @@ wire              [31:0] ccsr_wdata;
 wire                     ccsr_wen;
 wire              [31:0] ccsr_rdata;
 
+// Debug Module Interface (DMI, APB) - DTM master <-> core DM slave
+wire                     dmi_psel;
+wire                     dmi_penable;
+wire              [8:0]  dmi_paddr;
+wire                     dmi_pwrite;
+wire              [31:0] dmi_pwdata;
+wire              [2:0]  dmi_pprot;
+wire                     dmi_pready;
+wire              [31:0] dmi_prdata;
+wire                     dmi_pslverr;
+
 
 //////======================================================================================================================//////
 //////                                                       ARVERN                                                         //////
 //////======================================================================================================================//////
 
 parameter   RV32E_EN            =  0;             // Base ISA: 0=RV32I, 1=RV32E
-parameter   NMI_EN              =  1;             // Smrnmi resumable NMI extension: 0=absent, 1=present
 parameter   SU_MODE_EN          =  1;             // S-mode + U-mode privilege modes
+parameter   PMP_NR              = 16;             // Physical Memory Protection: writable entries (0, 4, 8 or 16; 0=absent)
 parameter   ZICNTR_EN           =  1;             // Zicntr extension: 0=absent, 1=present (cycle, time, instret)
 parameter   ZIHPM_NR            =  1;             // Zihpm: number of HPM counters (0-8)
 parameter   B_EXTENSION         =  4;             // Bit manipulation extension: 0=none, 1=Zbb, 2=Zbb+Zba, 3=Zbb+Zba+Zbs, 4=Zbb+Zba+Zbs+Zbc
@@ -196,11 +223,12 @@ parameter   DIV_TYPE            =  3;             // Divider type:    1=12xCycle
 parameter   CCSR_EN             =  1;             // Enable Custom-CSR interface
 parameter   SINGLE_CYCLE_BRANCH =  1;             // Taken-branch latency: 1=zero-bubble (max IPC, lower Fmax), 0=one-bubble (lower IPC, max Fmax)
 parameter   ASYNC_RST_EN        =  1'b1;          // Reset architecture: 1=async active-low reset (default), 0=synchronous reset
-parameter   MVENDORID           =  32'h00000000;  // JEDEC manufacturer ID of the chip vendor integrator.
+parameter   DEBUG_EN            =  1;             // External debug (RISC-V Debug 1.0): 0=absent, 1=present (JTAG DTM instantiated below)
+parameter   DM_TRIGGER_NR       =  2;             // Sdtrig hardware triggers (0-8, only meaningful when DEBUG_EN=1)
 
 arvern   #(.RV32E_EN            ( RV32E_EN            ),
-           .NMI_EN              ( NMI_EN              ),
            .SU_MODE_EN          ( SU_MODE_EN          ),
+           .PMP_NR              ( PMP_NR              ),
            .ZICNTR_EN           ( ZICNTR_EN           ),
            .ZIHPM_NR            ( ZIHPM_NR            ),
            .B_EXTENSION         ( B_EXTENSION         ),
@@ -211,7 +239,8 @@ arvern   #(.RV32E_EN            ( RV32E_EN            ),
            .CCSR_EN             ( CCSR_EN             ),
            .SINGLE_CYCLE_BRANCH ( SINGLE_CYCLE_BRANCH ),
            .ASYNC_RST_EN        ( ASYNC_RST_EN        ),
-           .MVENDORID           ( MVENDORID           )) dut (
+           .DEBUG_EN            ( DEBUG_EN            ),
+           .DM_TRIGGER_NR       ( DM_TRIGGER_NR       )) dut (
 
 // AHB CLOCK & RESET
     .hclk_i                    ( free_clk_i                ),
@@ -240,6 +269,7 @@ arvern   #(.RV32E_EN            ( RV32E_EN            ),
 
     .data_haddr_o              ( data_haddr                ),
     .data_hburst_o             ( data_hburst               ),
+    .data_hmaster_o            ( data_hmaster              ),
     .data_hmastlock_o          ( data_hmastlock            ),
     .data_hprot_o              ( data_hprot                ),
     .data_hsize_o              ( data_hsize                ),
@@ -254,6 +284,22 @@ arvern   #(.RV32E_EN            ( RV32E_EN            ),
     .ccsr_reg_sel_o            ( ccsr_reg_sel              ),
     .ccsr_wdata_o              ( ccsr_wdata                ),
     .ccsr_wen_o                ( ccsr_wen                  ),
+
+// EXTERNAL DEBUG (RISC-V Debug 1.0) - DMI slave + status; inert when DEBUG_EN=0
+    .dbgresetn_i               ( hresetn_i                 ),
+    .dbg_debug_mode_o          ( dbg_debug_mode_o          ),
+    .dbg_halted_o              ( dbg_halted_o              ),
+    .dbg_stoptime_o            ( dbg_stoptime_o            ),
+    .dbg_ndmreset_o            ( dbg_ndmreset_o            ),
+    .dmi_psel_i                ( dmi_psel                  ),
+    .dmi_penable_i             ( dmi_penable               ),
+    .dmi_paddr_i               ( dmi_paddr                 ),
+    .dmi_pwrite_i              ( dmi_pwrite                ),
+    .dmi_pwdata_i              ( dmi_pwdata                ),
+    .dmi_pprot_i               ( dmi_pprot                 ),
+    .dmi_pready_o              ( dmi_pready                ),
+    .dmi_prdata_o              ( dmi_prdata                ),
+    .dmi_pslverr_o             ( dmi_pslverr               ),
 
 // EXTERNAL INTERRUPT INPUTS
     .irq_m_software_i          ( aclint_irq_m_software     ),
@@ -272,8 +318,6 @@ arvern   #(.RV32E_EN            ( RV32E_EN            ),
 
 // NMI (SMRNMI)
     .nmi_i                     ( nmi_i                     ),
-    .nmi_vector_i              ( nmi_vector_i              ),
-
 // TIME INTERFACE (ZICNTR)
     .time_req_o                ( aclint_time_req           ),
     .time_gnt_i                ( aclint_time_gnt           ),
@@ -283,6 +327,65 @@ arvern   #(.RV32E_EN            ( RV32E_EN            ),
     .hpm_platform_events_i     ( hpm_platform_events_i     )
 
 );
+
+//////======================================================================================================================//////
+//////                                     DEBUG TRANSPORT MODULE (JTAG DTM) - DEBUG_EN only                                //////
+//////======================================================================================================================//////
+
+generate
+if (DEBUG_EN) begin : g_jtag_dtm
+
+    // Cold-attach wake request: a TCKC/TCK-domain toggle the SoC's always-on
+    // controller would use to start a gated oscillator. This chip never gates it.
+    wire dbg_wakeup;
+    wire dbg_wakeup_unused = dbg_wakeup;
+
+    // JTAG Debug Transport Module. Owns the DMI (APB) master side and drives
+    // the core's DM slave. hclk_i MUST be the ungated oscillator (free_clk_i).
+    arv_dtm_jtag #(.ARST_EN ( ASYNC_RST_EN )) u_dtm (
+        .idcode_version_i ( jtag_idcode_version_i ),
+        .scan_mode_i      ( scan_mode_i           ),
+        .dbg_wakeup_o     ( dbg_wakeup            ),  // cold-attach wake; unused on this chip
+        .tck_i            ( jtag_tck_i            ),
+        .trst_n_i         ( jtag_trst_n_i         ),
+        .tms_i            ( jtag_tms_i            ),
+        .tdi_i            ( jtag_tdi_i            ),
+        .tdo_o            ( jtag_tdo_o            ),
+        .tdo_oe_o         ( jtag_tdo_oe_o         ),
+
+        .hclk_i           ( free_clk_i            ),
+        .dbgresetn_i      ( hresetn_i             ),
+
+        .dmi_psel_o       ( dmi_psel              ),
+        .dmi_penable_o    ( dmi_penable           ),
+        .dmi_paddr_o      ( dmi_paddr             ),
+        .dmi_pwrite_o     ( dmi_pwrite            ),
+        .dmi_pwdata_o     ( dmi_pwdata            ),
+        .dmi_pprot_o      ( dmi_pprot             ),
+        .dmi_pready_i     ( dmi_pready            ),
+        .dmi_prdata_i     ( dmi_prdata            ),
+        .dmi_pslverr_i    ( dmi_pslverr           )
+    );
+
+end
+else begin : g_no_dtm
+
+    // DEBUG_EN=0: no DTM. Drive the DMI master side idle and tri-off the TDO pad.
+    assign dmi_psel      =  1'b0;
+    assign dmi_penable   =  1'b0;
+    assign dmi_paddr     =  9'h0;
+    assign dmi_pwrite    =  1'b0;
+    assign dmi_pwdata    = 32'h0;
+    assign dmi_pprot     =  3'h0;
+    assign jtag_tdo_o    =  1'b0;
+    assign jtag_tdo_oe_o =  1'b0;
+
+    // Sink otherwise-unused JTAG inputs and core DMI responses.
+    wire  unused_dbg = 1'b0 | jtag_tck_i | jtag_trst_n_i | jtag_tms_i | jtag_tdi_i
+                            | dmi_pready | dmi_pslverr | (|dmi_prdata);
+
+end
+endgenerate
 
 //////======================================================================================================================//////
 //////                                                 CUSTOM CSR REGISTERS                                                 //////
@@ -328,6 +431,9 @@ ahb_bus_system #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(S
     .hresetn_i                 ( hresetn_i                 ),
     .hclk_en_o                 ( system_hclk_en            ),
 
+// DFT
+    .scan_mode_i               ( scan_mode_i               ),
+
 // EXECUTABLE AHB BUS MANAGER INTERFACE
     .m_x_haddr_i               ( inst_haddr                ),
     .m_x_hburst_i              ( inst_hburst               ),
@@ -346,6 +452,7 @@ ahb_bus_system #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(S
 // NON-EXECUTABLE AHB MANAGER INTERFACE
     .m_nx_haddr_i              ( data_haddr                ),
     .m_nx_hburst_i             ( data_hburst               ),
+    .m_nx_hmaster_i            ( data_hmaster              ),
     .m_nx_hmastlock_i          ( data_hmastlock            ),
     .m_nx_hprot_i              ( data_hprot                ),
     .m_nx_hsize_i              ( data_hsize                ),
@@ -429,6 +536,17 @@ ahb_bus_system #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(S
     .aclint_time_gnt_o         ( aclint_time_gnt           ),
     .aclint_time_val_o         ( aclint_time_val           )
 );
+
+
+//////======================================================================================================================//////
+//////                                                     LINT CLEANUP                                                     //////
+//////======================================================================================================================//////
+
+// Per-block clock enables (hclk_en_o) are driven but unused: this trial has no
+// clock-gate cell, so every block runs on the free-running free_clk_i.
+wire  dut_hclk_en_unused    = dut_hclk_en;
+wire  system_hclk_en_unused = system_hclk_en;
+wire  ccsr_hclk_en_unused   = ccsr_hclk_en;
 
 
 endmodule

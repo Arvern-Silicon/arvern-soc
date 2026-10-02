@@ -14,7 +14,7 @@
 //                      brought into the clock domain by an arv_synchronizer
 //                      (2-FF), then debounced. Reset architecture (async/sync)
 //                      is selectable via ASYNC_RST_EN and threaded to the
-//                      arv_common primitives. NOTE: this module's `rst` is
+//                      arv_primitives primitives. NOTE: this module's `rst` is
 //                      active-HIGH; it is inverted to the active-low convention
 //                      the arv_ipdff / arv_synchronizer primitives expect.
 //----------------------------------------------------------------------------
@@ -33,7 +33,7 @@ module sync_debouncer_10ms #(
 );
 
 
-// Active-low reset for the arv_common primitives (local `rst` is active-high).
+// Active-low reset for the arv_primitives primitives (local `rst` is active-high).
 wire       rst_n = ~rst;
 
 
@@ -41,7 +41,7 @@ wire       rst_n = ~rst;
 wire signal_sync;
 arv_synchronizer #(.W(1), .ARST_EN(ASYNC_RST_EN)) u_sync (
     .clk_i    (clk_50mhz),
-    .resetn_i (rst_n),
+    .rst_n_i  (rst_n),
     .async_i  (signal_async),
     .sync_o   (signal_sync));
 

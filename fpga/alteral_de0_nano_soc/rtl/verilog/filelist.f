@@ -29,8 +29,16 @@ sync_debouncer_10ms.v
 ahb_bus_system.v
 ahb_arbiter.v
 ahb_decoder.v
-rom_32kb.v
+pmem_32kb.v
 sram_32kb.v
+
+//=============================================================================
+// Altera megafunction wrappers (ALTIOBUF bidirectional pad buffer). The real
+// cyclonev_io_ibuf/obuf primitives are provided by Quartus at synthesis; the
+// simulation-only behavioural models live in bench/verilog/cyclonev_io.v.
+//=============================================================================
+
+mega/io_buf.v
 
 //=============================================================================
 // arvern CPU core
@@ -38,6 +46,13 @@ sram_32kb.v
 
 +incdir+../../../../../arvern/rtl/verilog/
 -f ../../../../../arvern/rtl/verilog/filelist.f
+
+//=============================================================================
+// Debug Transport Module (selectable JTAG/UART/I2C wrapper) - DEBUG_EN=1 only
+//=============================================================================
+
++incdir+../../../../../arvern-ips/arv_dtm/rtl/verilog/
+-f ../../../../../arvern-ips/arv_dtm/rtl/verilog/filelist.f
 
 //=============================================================================
 // AHB interconnect
@@ -57,9 +72,9 @@ sram_32kb.v
 -f ../../../../../arvern-ips/ahb_periph_example/rtl/verilog/filelist.f
 
 //=============================================================================
-// ACLINT (pulls arv_common: arv_ipdff + arv_synchronizer)
+// ACLINT (pulls arv_primitives: arv_ipdff + arv_synchronizer)
 //=============================================================================
 
-+incdir+../../../../../arvern-ips/arv_common/rtl/verilog/
++incdir+../../../../../arvern-ips/arv_primitives/rtl/verilog/
 +incdir+../../../../../arvern-ips/ahb_aclint/rtl/verilog/
 -f ../../../../../arvern-ips/ahb_aclint/rtl/verilog/filelist.f

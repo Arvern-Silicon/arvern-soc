@@ -23,6 +23,7 @@
 +define+ARV_CPU_INST=dut.dut
 +define+LONG_TIMEOUT
 altsyncram.v
+cyclonev_io.v
 ../../../../../arvern/bench/verilog/probes_cpu.v
 ../../../../../arvern/bench/verilog/probes_instructions.v
 tb_arvern_fpga.v

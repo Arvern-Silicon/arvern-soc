@@ -22,6 +22,10 @@
 //   - KEY[1] press   (platform IRQ[0],  : cycles the display mode (and acts as
 //                     MIP[16])            the action button in the game mode).
 //
+//   The mode can also be selected from the host by sending a digit over the RTT
+//   down-channel -- see poll_rtt_commands(). That is polled from the main loop,
+//   not from an interrupt.
+//
 //   NOTE: the platform pending bits MIP[31:16] are latched in this core, so the
 //   SW and KEY handlers clear BOTH the peripheral source AND the MIP bit,
 //   source-first (the timer's MTIP is level-based, cleared by the mtimecmp
@@ -45,6 +49,25 @@
 //----------------------------------------------------------------------------
 
 #include "mylib/my_func.h"
+#include "SEGGER_RTT.h"
+
+// RTT (SEGGER Real Time Transfer) -- target->host printf over the debug link,
+// with no UART and no halting: the host reads the ring buffer straight out of
+// SRAM over SBA while the core keeps running. Channel 0 is configured
+// NO_BLOCK_SKIP, so with no debugger attached these calls just drop the text and
+// the light show is unaffected.
+//
+// Channel 0 also carries commands the other way (host -> target): see
+// poll_rtt_commands() below.
+//
+// View it with the arvern-minidebug RTT tab, arvern-gdbserver --rtt-port, or
+// SEGGER's JLinkRTTViewer / Ozone. NOT with OpenOCD: it registers `rtt setup`
+// commands only for certain target types and `riscv` is not one of them.
+#define rtt_printf(...)  SEGGER_RTT_printf(0, __VA_ARGS__)
+
+static const char *const MODE_NAMES[] = {
+    "COUNTER", "SCANNER", "BAR", "SPARKLE", "BREATHE", "GAME"
+};
 
 //-----------------------------------------------------------------------------
 // CSR access helpers
@@ -69,14 +92,15 @@
 #define SW_MASK   0x0Fu                    // SW[3:0]
 #define KEY1_BIT  (1u << 5)               // KEY[1]  (KEY[0] is the board reset)
 
-// Timer tick base. mtime increments at the LF clock (= 50 MHz on this board).
+// Timer tick base. mtime increments at the LF clock, 5 MHz (1 tick = 200 ns) on
+// the board and in simulation alike; simulation only uses shorter intervals.
 // SW[2:1] selects one of four speeds (index into speed_interval[]).
 #ifdef SIMULATION
-static const unsigned int speed_interval[4] = {  800u,  500u,  300u,  150u };
-#define BREATHE_INTERVAL  40u                // fast PWM carrier sub-step (sim)
+static const unsigned int speed_interval[4] = {   80u,   50u,   30u,   15u };
+#define BREATHE_INTERVAL  4u                 // fast PWM carrier sub-step (sim)
 #else
-static const unsigned int speed_interval[4] = {10000000u,5000000u,2000000u,800000u};
-#define BREATHE_INTERVAL  6000u              // PWM sub-step: ~130 Hz refresh @ 64 steps (board)
+static const unsigned int speed_interval[4] = {1000000u, 500000u, 200000u, 80000u};  // 200/100/40/16 ms
+#define BREATHE_INTERVAL  600u               // PWM sub-step: 120 us -> ~130 Hz refresh @ 64 steps (board)
 #endif
 
 #define PWM_STEPS  64u                       // breathing PWM resolution (sub-steps per refresh)
@@ -85,11 +109,11 @@ static const unsigned int speed_interval[4] = {10000000u,5000000u,2000000u,80000
 
 // Reaction-game timing (tick = GAME_INTERVAL mtime units)
 #ifdef SIMULATION
-#define GAME_INTERVAL    200u
+#define GAME_INTERVAL    20u
 #define GAME_SCORE_HOLD  6u                  // (kept short in simulation)
 #define GAME_FAIL_HOLD   6u
 #else
-#define GAME_INTERVAL    2000000u            // ~40 ms poll on the board
+#define GAME_INTERVAL    200000u             // 40 ms poll on the board
 #define GAME_SCORE_HOLD  64u                 // ~2.6 s steady score (time to read it)
 #define GAME_FAIL_HOLD   48u                 // ~2 s blinking error
 #endif
@@ -122,6 +146,28 @@ static unsigned int   wave_sub;          // MODE_BREATHE wave-speed prescaler
 static int            game_state;        // MODE_GAME sub-state (GAME_*)
 static unsigned int   game_timer;        // MODE_GAME tick countdown
 static unsigned int   go_time;           // mtime captured at the GO flash
+
+//-----------------------------------------------------------------------------
+// RTT events recorded in interrupt context, PRINTED from the main loop.
+//
+// Never call SEGGER_RTT_printf from an ISR. It formats a string and takes the
+// RTT lock (which masks interrupts) -- thousands of cycles. The KEY and SW
+// pending bits are LATCHED single bits (MIP[16]/MIP[17]), so every press that
+// arrives inside that window collapses into the one already-pending bit and is
+// silently lost. A burst of key presses then produces far fewer mode changes
+// than the user made -- which is exactly what it looks like: a dropped press.
+//
+// Recording an event is a couple of stores; the main loop prints it after the
+// next `wfi` wake, at most one animation frame later.
+//-----------------------------------------------------------------------------
+#define EV_MODE   (1u << 0)              // mode changed by KEY  -> ev_mode
+#define EV_REACT  (1u << 1)              // game reaction scored -> ev_react/_bar
+#define EV_FAIL   (1u << 2)              // game false start / too slow
+
+static volatile unsigned int ev_pending; // bitmask of EV_*
+static volatile int          ev_mode;    // new mode, for EV_MODE
+static volatile unsigned int ev_react;   // reaction time in ticks, for EV_REACT
+static volatile unsigned int ev_bar;     // score bar, for EV_REACT
 
 //-----------------------------------------------------------------------------
 // MTIMER helpers (64-bit mtime / mtimecmp over a 32-bit bus)
@@ -254,6 +300,7 @@ static inline unsigned int score_bar(unsigned int react)
 
 static inline void enter_fail(void)
 {
+    ev_pending |= EV_FAIL;               // printed from the main loop, not here
     game_state = GAME_FAIL;
     game_timer = GAME_FAIL_HOLD;
 }
@@ -281,6 +328,95 @@ static inline void frame_game(void)
             else P1_LED_CTRL = ((game_timer >> 2) & 1u) ? 0xFFu : 0x00u;
             break;
     }
+}
+
+//-----------------------------------------------------------------------------
+// Mode switching
+//
+// Shared by the two things that can change mode: the KEY[1] handler and an RTT
+// command. It does NOT touch interrupts -- the trap handler already runs with
+// them off, and the RTT path (thread context) wraps this in its own critical
+// section. Doing it here instead would silently re-enable interrupts inside the
+// trap handler.
+//-----------------------------------------------------------------------------
+static inline void apply_mode(int m)
+{
+    mode = m;
+    reset_mode_state();
+    if (mode == MODE_GAME) game_start();
+}
+
+//-----------------------------------------------------------------------------
+// RTT down-channel commands (host -> target)
+//
+// Called from the main loop after `wfi` returns, NEVER from an interrupt: it can
+// call SEGGER_RTT_printf, which takes the RTT lock, and the timer tick is what
+// wakes us -- so commands are serviced at the frame rate of the current mode
+// (fastest in BREATHE, ~once per animation step otherwise). More than good
+// enough for typing a digit, and it costs nothing when no debugger is attached.
+//
+// Digits select a mode directly, using the same numbering the log already
+// prints ("mode -> 1 (SCANNER)"). Anything else is echoed back as ignored, so a
+// stray keystroke explains itself rather than vanishing.
+//-----------------------------------------------------------------------------
+static void poll_rtt_commands(void)
+{
+    int c;
+
+    while ((c = SEGGER_RTT_GetKey()) >= 0) {
+        if (c == '\n' || c == '\r' || c == ' ' || c == '\t')
+            continue;                       // line endings from the terminal
+
+        if (c >= '0' && c < '0' + NUM_MODES) {
+            // `mode` and the per-mode state are read by the timer ISR every
+            // tick; changing them piecemeal would let a frame render against a
+            // half-switched mode. Save/restore rather than unconditionally
+            // re-enabling, so this stays correct if it is ever called with
+            // interrupts already off.
+            unsigned int prev = read_csr(mstatus);
+            clear_csr(mstatus, MSTATUS_MIE);
+            apply_mode(c - '0');
+            if (prev & MSTATUS_MIE) set_csr(mstatus, MSTATUS_MIE);
+
+            rtt_printf("[rtt ] mode -> %d (%s)\n", mode, MODE_NAMES[mode]);
+        } else {
+            rtt_printf("[rtt ] '%c' ignored -- send 0..%d\n",
+                       (char)c, NUM_MODES - 1);
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+// Print whatever the interrupt handlers recorded. Main-loop context only -- see
+// the ev_* declarations for why these are not printed where they happen.
+//
+// The snapshot-and-clear runs with interrupts masked so an event raised midway
+// through cannot be dropped: without that, an ISR firing between the read and
+// the clear would have its bit erased and its message lost.
+//-----------------------------------------------------------------------------
+static void poll_rtt_events(void)
+{
+    unsigned int pending, react, bar;
+    int          m;
+
+    if (!ev_pending)                     // fast path: nothing happened
+        return;
+
+    unsigned int prev = read_csr(mstatus);
+    clear_csr(mstatus, MSTATUS_MIE);
+    pending    = ev_pending;
+    m          = ev_mode;
+    react      = ev_react;
+    bar        = ev_bar;
+    ev_pending = 0;
+    if (prev & MSTATUS_MIE) set_csr(mstatus, MSTATUS_MIE);
+
+    if (pending & EV_MODE)
+        rtt_printf("[key ] mode -> %d (%s)\n", m, MODE_NAMES[m]);
+    if (pending & EV_REACT)
+        rtt_printf("[game] reaction %u ticks -> score bar 0x%02x\n", react, bar);
+    if (pending & EV_FAIL)
+        rtt_printf("[game] fail (false start or too slow)\n");
 }
 
 // Timer interval for the current mode (breathing & game run at fixed rates).
@@ -316,15 +452,18 @@ void __attribute__((interrupt("machine"), aligned(4))) trap_handler(void)
                 enter_fail();
             } else if (game_state == GAME_GO) {    // valid reaction -> score
                 unsigned int react = (unsigned int)mtime_read() - go_time;
-                P1_LED_CTRL = score_bar(react);
+                unsigned int bar   = score_bar(react);
+                P1_LED_CTRL = bar;
                 game_state  = GAME_SCORE;
                 game_timer  = GAME_SCORE_HOLD;
+                ev_react = react; ev_bar = bar;    // printed from the main loop
+                ev_pending |= EV_REACT;
             }
             // GAME_SCORE / GAME_FAIL: ignore further presses (auto-returns)
         } else {
-            mode = (mode + 1 >= NUM_MODES) ? 0 : mode + 1;  // next mode
-            reset_mode_state();
-            if (mode == MODE_GAME) game_start();
+            apply_mode((mode + 1 >= NUM_MODES) ? 0 : mode + 1);   // next mode
+            ev_mode = mode;                        // printed from the main loop
+            ev_pending |= EV_MODE;
         }
         // clear source first, read back, then the latched MIP[16]
         P1_KEY_SW_IRQ_VAL = KEY1_BIT;
@@ -347,12 +486,25 @@ void __attribute__((interrupt("machine"), aligned(4))) trap_handler(void)
 //=============================================================================
 int main(void)
 {
+    SEGGER_RTT_Init();
+    rtt_printf("\n=== aRVern leds demo ===\n");
+    rtt_printf("RTT up: %d bytes, down: %d bytes\n",
+               BUFFER_SIZE_UP, BUFFER_SIZE_DOWN);
+
     mode        = MODE_COUNTER;
-    led_dir     = 1;
     counter_val = 0;
     lfsr        = 0xA5u;                  // nonzero LFSR seed
     reset_mode_state();
-    interval    = speed_interval[0];     // SW[2:1] = 0 at boot
+
+    // Sample the live switches at reset so direction/speed match the physical SW
+    // positions from the first frame: the SW IRQ only fires on a *change*, so
+    // without this the settings would stay at their defaults until the user
+    // touched a switch.
+    unsigned int sw = P1_KEY_SW_VAL & SW_MASK;
+    led_dir  = (sw & 0x1u) ? -1 : 1;               // SW[0]   -> direction
+    interval = speed_interval[(sw >> 1) & 0x3u];   // SW[2:1] -> speed
+    rtt_printf("switches 0x%x -> dir %s, interval %u\n",
+               sw, (led_dir > 0) ? "up" : "down", interval);
 
     // Peripheral IRQ config:
     //   SW[2:0] -> any-edge (live dir/speed updates)
@@ -371,8 +523,19 @@ int main(void)
     set_csr(mie, MIE_MTIE | MIE_PLATFORM0 | MIE_PLATFORM1);
     set_csr(mstatus, MSTATUS_MIE);
 
-    for (;;)
-        __asm__ volatile ("wfi");        // all activity is interrupt-driven
+    rtt_printf("running: KEY[1] cycles mode, SW[0] dir, SW[2:1] speed\n");
+    rtt_printf("commands: send a digit 0-%d to select a mode "
+               "(0=COUNTER 1=SCANNER 2=BAR 3=SPARKLE 4=BREATHE 5=GAME)\n",
+               NUM_MODES - 1);
+
+    // Drawing stays fully interrupt-driven; `wfi` returns on every timer tick
+    // (and on KEY/SW), which is what paces the RTT command poll. With no
+    // debugger attached the poll finds an empty buffer and costs a few cycles.
+    for (;;) {
+        __asm__ volatile ("wfi");
+        poll_rtt_events();               // print what the ISRs recorded
+        poll_rtt_commands();             // host -> target keystrokes
+    }
 
     return 0;
 }

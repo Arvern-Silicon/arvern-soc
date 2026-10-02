@@ -53,7 +53,9 @@ task press_key1;
       KEY[1] = 1'b0;                            // press
       repeat (60) @(posedge FPGA_CLK1_50);      // debounce + trap + settle
       KEY[1] = 1'b1;                            // release
-      repeat (60) @(posedge FPGA_CLK1_50);
+      // The KEY pending bit is a single latched bit: a press that lands before the
+      // previous one was serviced merges with it. Leave the handler time to run.
+      repeat (300) @(posedge FPGA_CLK1_50);
    end
 endtask
 
@@ -61,7 +63,7 @@ initial
    begin
       errors = 0;
       @(posedge FPGA_CLK1_50);
-      @(posedge dut.reset_n);
+      @(posedge dut.hresetn);
 
       $display("");
       $display(" ====================================================================");
@@ -163,6 +165,7 @@ initial
          $display("|             LED DEMO TEST FAILED (%0d error(s))         |", errors);
       $display("");
 
+      error = error + errors;                   // the bench's verdict follows this test's
       stimulus_done = 1;
    end
 

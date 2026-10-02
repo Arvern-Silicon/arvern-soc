@@ -1,17 +1,34 @@
 #!/bin/bash
 
 ###############################################################################
+# 3_program_flash.sh
+#
+# Programs the DE0-Nano-SoC EPCS flash with a .jic previously produced by
+# 2_generate_flash_file.sh, using quartus_pgm over the USB-Blaster II.
+#
+# IMPORTANT: quartus_pgm needs live JTAG/USB-Blaster access. It therefore does
+# NOT work inside the dockerized Quartus flow on macOS (Docker on macOS cannot
+# reach the host USB). Run this on a USB-capable host with Quartus (native
+# Linux, or a VM with the USB-Blaster passed through).
+#
+# On a Windows machine, prefer the graphical route instead of this script:
+#   install the free standalone "Quartus Prime Programmer", open <name>.cdf
+#   (produced next to the .jic by 2_generate_flash_file.sh), and press Start.
+###############################################################################
+
+###############################################################################
 #                            Parameter Check                                  #
 ###############################################################################
 EXPECTED_ARGS=1
 if [ $# -ne $EXPECTED_ARGS ]; then
     echo ""
     echo "ERROR          : wrong number of arguments"
-    echo "USAGE          : ./2_program_flash.sh <bitstream name>"
-    echo "EXAMPLE        : ./2_program_flash.sh    leds"
+    echo "USAGE          : ./3_program_flash.sh <bitstream name>"
+    echo "EXAMPLE        : ./3_program_flash.sh    leds"
     echo ""
-    echo "AVAILABLE BITSTREAMS:"
-    for fullfile in ./bitstreams/*.sof ; do
+    echo "AVAILABLE JIC FILES (run ./2_generate_flash_file.sh first):"
+    for fullfile in ./bitstreams/*.jic ; do
+        [ -e "$fullfile" ] || continue
         filename=$(basename "$fullfile")
         filename="${filename%.*}"
         echo "                       - $filename"
@@ -23,45 +40,15 @@ fi
 ###############################################################################
 #                     Check if the required files exist                       #
 ###############################################################################
-soffile=bitstreams/$1.sof;
 jicfile=bitstreams/$1.jic;
 
-if [ ! -e $soffile ]; then
+if [ ! -e $jicfile ]; then
     echo ""
-    echo "ERROR: Specified SOF file doesn't exist: $soffile"
+    echo "ERROR: JIC file doesn't exist: $jicfile"
+    echo "       Generate it first with: ./2_generate_flash_file.sh $1"
     echo ""
     exit 1
 fi
-
-###############################################################################
-#                             Generate JIC file
-###############################################################################
-echo " ---------------------------------------------------------"
-echo "|  GENERATE JIC FILE"
-echo "|"
-echo "|  $soffile --> $jicfile"
-echo "|"
-echo " ---------------------------------------------------------"
-echo ""
-
-# Native mode (empty QUARTUS_PFX) needs quartus_cpf on PATH;
-# otherwise the user must set the QUARTUS_PFX environment variable to the right path
-if [ -z "$QUARTUS_PFX" ] && ! command -v quartus_cpf >/dev/null 2>&1; then
-    echo "ERROR: quartus_cpf not found on PATH and QUARTUS_PFX is empty."
-    exit 1
-fi
-
-# Copy and process COF file (host-side, cwd = altera)
-cp scripts/sof2jic.cof ./bitstreams/.
-sed -ie "s/BITSTREAM_NAME/$1/g"  ./bitstreams/sof2jic.cof
-
-# Convert SOF -> JIC
-mkdir -p WORK
-( cd WORK && ${QUARTUS_PFX}quartus_cpf -c ../bitstreams/sof2jic.cof )
-
-# Cleanup
-rm -rf ./bitstreams/sof2jic.cof*
-
 
 ###############################################################################
 #                             Program FLASH                                   #
@@ -75,6 +62,7 @@ echo "Note: if failing:"
 echo "                  - try killing 'jtagd', running 'jtagconfig'"
 echo "                  - try as 'root'"
 echo "                  - check dev usb permissions"
+echo "                  - remember: this does NOT work through Docker on macOS"
 echo ""
 
 # Native mode (empty QUARTUS_PFX) needs quartus_pgm on PATH;
@@ -84,7 +72,7 @@ if [ -z "$QUARTUS_PFX" ] && ! command -v quartus_pgm >/dev/null 2>&1; then
     exit 1
 fi
 
-# Copy and process CDF file
+# Copy and process CDF file (working copy referencing ../bitstreams/ from WORK)
 cp scripts/chain_with_flash.cdf  ./bitstreams/.
 sed -ie "s/BITSTREAM_NAME/$1/g"  ./bitstreams/chain_with_flash.cdf
 

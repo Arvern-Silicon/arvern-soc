@@ -1,6 +1,7 @@
 #
 # startup.S - minimal C runtime for the FPGA LED demo (bare-metal RISC-V)
 #
+#   0. double-trap boot sequence (arm mnstatus.NMIE, clear mstatush.MDT)
 #   1. set up the stack pointer
 #   2. copy the initialized .data section from its ROM load image into SRAM
 #   3. zero the .bss section
@@ -14,6 +15,12 @@
 .section .init, "ax"
 .globl _start
 _start:
+    # 0. Double-trap boot sequence (Smdbltrp). Out of reset mstatush.MDT = 1 and
+    #    mnstatus.NMIE = 0: any trap would be treated as unexpected (a critical
+    #    fault), and a write of mstatus.MIE = 1 is dropped while MDT = 1. Arm
+    #    NMIE first, then clear MDT -- in that order -- before enabling interrupts.
+    csrsi 0x744, 8                   #    mnstatus.NMIE = 1
+    csrw  mstatush, x0               #    mstatus.MDT   = 0
     la   sp, _stack_end              # 1. stack pointer (top of SRAM stack region)
 
     # 2. copy initialized data from its ROM load image into SRAM

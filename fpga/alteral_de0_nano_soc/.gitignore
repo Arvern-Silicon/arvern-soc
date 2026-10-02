@@ -21,9 +21,23 @@ software/apps/*/*.lst
 software/apps/*/*.size
 software/apps/*/*.o
 software/apps/*/*/*.o
+software/apps/*/*.jdebug*
+
+.DS_Store
+.idea/
+build/
+cmake-build-*/
+software/apps/*.local/
 
 synthesis/altera/WORK
 synthesis/altera/bitstreams/*.sof
 synthesis/altera/bitstreams/*.svf
+synthesis/altera/bitstreams/*.jic
+synthesis/altera/bitstreams/*.rpd
+synthesis/altera/bitstreams/*.map
+synthesis/altera/bitstreams/*.cdf
 synthesis/altera/scripts/design_files.qsf
 synthesis/altera/setup_d.*
+
+lint/vc_static/results
+lint/vc_static/*_d

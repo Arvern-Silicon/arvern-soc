@@ -346,6 +346,9 @@ wire        htrans0_unused = htrans_i[0];
 wire        hsize2_unused  = hsize_i[2];
 wire  [3:0] hprot_unused   = hprot_i;
 wire        hsmode_unused  = hsmode_i;
+wire        reg_dec_unused = |{reg_wr[DEC_SZ-1:KEY_SW_IRQ_VAL+1], reg_rd[DEC_SZ-1:KEY_SW_IRQ_VAL+1],
+                               reg_wr[KEY_SW_VAL-1:TTY_DATA+1],   reg_rd[KEY_SW_VAL-1:TTY_DATA+1],
+                               reg_wr[KEY_SW_VAL]};
 
 
 endmodule // ahb_led_key_sw

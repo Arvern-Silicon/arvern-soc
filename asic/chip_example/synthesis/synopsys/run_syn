@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [-noquit|--interactive|-i] [-lib <flavor>] [-fabric <type>]"
             echo "  -noquit, --noquit, --interactive, -i : Keep dc_shell open after synthesis"
             echo "  -lib <flavor>                        : Select library flavor (default: lib_default)"
-            echo "  -fabric <type>                       : Select fabric type (default: HIPERF)"
+            echo "  -fabric <type>                       : Select fabric type (default: FUSED)"
             exit 1
             ;;
     esac

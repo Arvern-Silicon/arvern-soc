@@ -117,7 +117,7 @@ if [ $VERBOSE -eq 1 ]; then
     echo ""
 fi
 
-# Flatten the filelist: resolve nested -f includes (e.g. the IPs' arv_common
+# Flatten the filelist: resolve nested -f includes (e.g. the IPs' arv_primitives
 # pull) to absolute paths and drop duplicate sources, so Verilator sees a clean,
 # self-contained list regardless of the invocation cwd. Falls back to the raw
 # filelist if the flattener can't be found.
@@ -132,7 +132,11 @@ else
 fi
 
 # Build and execute verilator command
-VERILATOR_CMD="verilator --lint-only -Wall -Wpedantic --top $TOP_MODULE  ../../../bench/verilog/altsyncram.v"
+# --timescale-override forces a uniform timescale on every module: the Altera
+# ALTIOBUF wrapper (io_buf.v) carries its own `timescale, which otherwise makes
+# Verilator's TIMESCALEMOD fire on all the (deliberately timescale-less) design
+# modules. The value is sim-irrelevant for lint (no delays are evaluated).
+VERILATOR_CMD="verilator --lint-only -Wall -Wpedantic --timescale-override 1ps/1ps --top $TOP_MODULE  ../../../bench/verilog/altsyncram.v ../../../bench/verilog/cyclonev_io.v"
 [ -n "$WAIVERS_ARG" ] && VERILATOR_CMD="$VERILATOR_CMD $WAIVERS_ARG"
 VERILATOR_CMD="$VERILATOR_CMD $EXTRA_FLAGS -f $FILELIST"
 

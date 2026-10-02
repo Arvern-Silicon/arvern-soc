@@ -2,8 +2,40 @@
 
 // Altera altsyncram: defparam is the standard instantiation style for Altera megafunctions
 lint_off -rule DEFPARAM        -file "*/sram_8kb_wrapper.v"
-lint_off -rule DEFPARAM        -file "*/rom_32kb.v"
+lint_off -rule DEFPARAM        -file "*/pmem_32kb.v"
 lint_off -rule DEFPARAM        -file "*/sram_32kb.v"
 
 // Altsyncram behavioral model: unused parameters are expected
 lint_off -rule UNUSEDPARAM    -file "*/altsyncram.v"
+
+// Altera ALTIOBUF megafunction (io_buf): wizard-generated instantiation style
+lint_off -rule DECLFILENAME     -file "*/io_buf.v"
+lint_off -rule DEFPARAM         -file "*/io_buf.v"
+lint_off -rule PINCONNECTEMPTY  -file "*/io_buf.v"
+
+// cyclonev_io behavioral primitive models: full vendor port set, most unused
+lint_off -rule DECLFILENAME     -file "*/cyclonev_io.v"
+lint_off -rule TIMESCALEMOD     -file "*/cyclonev_io.v"
+lint_off -rule UNUSEDPARAM      -file "*/cyclonev_io.v"
+lint_off -rule UNUSEDSIGNAL     -file "*/cyclonev_io.v"
+
+// arv_cgate is the library's latch+AND integrated clock gate; the latch is
+// intentional (the structure a technology ICG cell maps onto). Kept for any build
+// that instantiates it; the current RTL does not.
+lint_off -rule LATCH            -file "*/arv_cgate.v"
+
+// cJTAG (DTM_TYPE=3) only. Two false positives from whole-vector granularity and
+// from the deliberate mixed-reset architecture:
+//
+//  * UNOPTFLAT on cjtag_tmsc_oe: the reported cycle leaves via GPIO_1[11] (TMSC
+//    output enable) and returns through the GPIO_1[10] (TCKC) input buffer, i.e.
+//    two DIFFERENT bits of the same `inout [35:0] GPIO_1` vector. Verilator's
+//    analysis is per-signal, not per-bit, so it cannot see that bit 11 never
+//    feeds bit 10. tmsc_oe_o is built only from flop outputs plus ~tckc_i, so no
+//    real combinational loop exists.
+//
+//  * SYNCASYNCNET on dbgresetn: with ASYNC_RST_EN=0 the clk_i domain uses a
+//    synchronous reset, while the TCKC domain is always asynchronous by design
+//    (the probe clock may not be running). Mixed usage is the intent.
+lint_off -rule UNOPTFLAT        -file "*/arvern_fpga.v"
+lint_off -rule SYNCASYNCNET     -file "*/arvern_fpga.v"

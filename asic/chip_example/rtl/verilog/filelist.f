@@ -37,6 +37,13 @@ chip_example.v
 -f ../../../../../arvern/rtl/verilog/filelist.f
 
 //=============================================================================
+// Debug Transport Module (JTAG DTM) - instantiated when DEBUG_EN=1
+//=============================================================================
+
++incdir+../../../../../arvern-ips/arv_dtm/rtl/verilog/
+-f ../../../../../arvern-ips/arv_dtm/rtl/verilog/filelist.f
+
+//=============================================================================
 // AHB interconnect
 //=============================================================================
 
@@ -63,6 +70,6 @@ chip_example.v
 // ACLINT
 //=============================================================================
 
-+incdir+../../../../../arvern-ips/arv_common/rtl/verilog/
++incdir+../../../../../arvern-ips/arv_primitives/rtl/verilog/
 +incdir+../../../../../arvern-ips/ahb_aclint/rtl/verilog/
 -f ../../../../../arvern-ips/ahb_aclint/rtl/verilog/filelist.f
