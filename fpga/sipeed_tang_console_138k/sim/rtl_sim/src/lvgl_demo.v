@@ -1,0 +1,1 @@
+../../../software/apps/lvgl_demo/sim/lvgl_demo.v

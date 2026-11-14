@@ -1,0 +1,12 @@
+# The game data (the shareware episode and what is made from it): fetched and
+# made by tools/fetch_data.py, not redistributed here
+/data/
+/sim/sd_image.bin
+/sim/sd_image.mem
+# Build outputs
+*.elf
+*.ihex
+*.map
+/arv/obj/
+/arv/obj_sim/
+/tools/render_music

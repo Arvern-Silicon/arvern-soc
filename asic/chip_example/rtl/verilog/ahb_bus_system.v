@@ -20,6 +20,9 @@
 //                              - Periph #0
 //                              - Periph #1
 //                              - Periph #2
+//                              - ACLINT
+//                              - Belenos register and VRAM-window ports (the
+//                                controller is in the top level)
 //----------------------------------------------------------------------------
 
 module  ahb_bus_system #(
@@ -29,6 +32,7 @@ module  ahb_bus_system #(
     parameter                ROM_SIZE     = 8*1024,  // Size of the ROM memory instance (in Bytes)
     parameter                SRAM_X_SIZE  = 8*1024,  // Size of the Executable SRAM memory instance (in Bytes)
     parameter                SRAM_NX_SIZE = 8*1024,  // Size of the Non-executable SRAM memory instance (in Bytes)
+    parameter                VRAM_WORDS   = 32768,   // Belenos VRAM depth (32-bit words)
     parameter                ASYNC_RST_EN = 1'b1     // Reset architecture: 1=async active-low reset (default), 0=synchronous reset
 
 ) (
@@ -150,7 +154,39 @@ module  ahb_bus_system #(
 
     input  wire              aclint_time_req_i,       // core time_req_o
     output wire              aclint_time_gnt_o,       // -> core time_gnt_i
-    output wire       [63:0] aclint_time_val_o        // -> core time_val_i
+    output wire       [63:0] aclint_time_val_o,       // -> core time_val_i
+
+// BELENOS GRAPHIC CONTROLLER (in the top level): register port
+//========================================
+    output wire              blnsr_hsel_o,            // select
+    output wire       [31:0] blnsr_haddr_o,           // address
+    output wire        [1:0] blnsr_htrans_o,          // transfer type
+    output wire              blnsr_hwrite_o,          // write
+    output wire        [2:0] blnsr_hsize_o,           // size
+    output wire        [3:0] blnsr_hprot_o,           // protection
+    output wire              blnsr_hsmode_o,          // S-mode access
+    output wire              blnsr_hready_o,          // bus ready
+    output wire       [31:0] blnsr_hwdata_o,          // write data
+    input  wire       [31:0] blnsr_hrdata_i,          // read data
+    input  wire              blnsr_hreadyout_i,       // slave ready
+    input  wire              blnsr_hresp_i,           // slave error
+
+// BELENOS GRAPHIC CONTROLLER (in the top level): VRAM-window port
+//========================================
+    output wire              blnsv_hsel_o,            // select
+    output wire       [31:0] blnsv_haddr_o,           // address
+    output wire        [1:0] blnsv_htrans_o,          // transfer type
+    output wire              blnsv_hwrite_o,          // write
+    output wire        [2:0] blnsv_hsize_o,           // size
+    output wire        [3:0] blnsv_hprot_o,           // protection
+    output wire              blnsv_hsmode_o,          // S-mode access
+    output wire              blnsv_hready_o,          // bus ready
+    output wire       [31:0] blnsv_hwdata_o,          // write data
+    input  wire       [31:0] blnsv_hrdata_i,          // read data
+    input  wire              blnsv_hreadyout_i,       // slave ready
+    input  wire              blnsv_hresp_i,           // slave error
+
+    input  wire              blns_hclk_en_i           // Belenos clock-gate enable (into hclk_en_o)
 
 );
 
@@ -174,6 +210,8 @@ localparam               SRAM_NX_ADDRW  = $clog2(SRAM_NX_SIZE)-2; // Address wid
 localparam               SRAM_NX_HADDRW = $clog2(SRAM_NX_SIZE);   // Address width of the Non-executable SRAM AHB interface (8b words)
 
 localparam               HAUSER_W       = 1;                      // Width of the HAUSER bus (min value is 1)
+
+localparam               VRAM_SIZE      = VRAM_WORDS*4;           // Belenos VRAM window size (in Bytes)
 
 // Arbiter Interface
 // m_nx grant/request are consumed only by the advanced interconnect variants
@@ -199,13 +237,13 @@ wire               [1:0] m_request;
 // s_x_decoder_* feed the executable-space decoder used only by the HIPERF/FUSED
 // interconnect variants; the default interconnect uses s_decoder_* below only.
 `ifdef HIPERF
-wire               [6:0] s_x_decoder_1hot;
+wire               [8:0] s_x_decoder_1hot;
 wire              [31:0] s_x_decoder_addr;
 `elsif FUSED
-wire               [6:0] s_x_decoder_1hot;
+wire               [8:0] s_x_decoder_1hot;
 wire              [31:0] s_x_decoder_addr;
 `endif
-wire               [6:0] s_decoder_1hot;
+wire               [8:0] s_decoder_1hot;
 wire              [31:0] s_decoder_addr;
 
 // AHB Subordinate Interfaces
@@ -323,6 +361,38 @@ wire               [1:0] s_aclint_htrans;
 wire              [31:0] s_aclint_hwdata;
 wire                     s_aclint_hwrite;
 
+wire              [31:0] s_blnsr_hrdata;
+wire                     s_blnsr_hreadyout;
+wire                     s_blnsr_hresp;
+wire                     s_blnsr_hsel;
+wire              [31:0] s_blnsr_haddr;
+wire      [HAUSER_W-1:0] s_blnsr_hauser;
+wire               [2:0] s_blnsr_hburst;
+wire               [3:0] s_blnsr_hmaster;
+wire                     s_blnsr_hmastlock;
+wire               [3:0] s_blnsr_hprot;
+wire                     s_blnsr_hready;
+wire               [2:0] s_blnsr_hsize;
+wire               [1:0] s_blnsr_htrans;
+wire              [31:0] s_blnsr_hwdata;
+wire                     s_blnsr_hwrite;
+
+wire              [31:0] s_blnsv_hrdata;
+wire                     s_blnsv_hreadyout;
+wire                     s_blnsv_hresp;
+wire                     s_blnsv_hsel;
+wire              [31:0] s_blnsv_haddr;
+wire      [HAUSER_W-1:0] s_blnsv_hauser;
+wire               [2:0] s_blnsv_hburst;
+wire               [3:0] s_blnsv_hmaster;
+wire                     s_blnsv_hmastlock;
+wire               [3:0] s_blnsv_hprot;
+wire                     s_blnsv_hready;
+wire               [2:0] s_blnsv_hsize;
+wire               [1:0] s_blnsv_htrans;
+wire              [31:0] s_blnsv_hwdata;
+wire                     s_blnsv_hwrite;
+
 // ROM Interface
 wire              [31:0] rom0_dout;
 wire     [ROM_ADDRW-1:0] rom0_addr;
@@ -360,6 +430,7 @@ wire                     s_periph0_hclk_en;
 wire                     s_periph1_hclk_en;
 wire                     s_periph2_hclk_en;
 wire                     s_aclint_hclk_en;
+wire                     s_blns_hclk_en;
 wire                     aclint_mtimer_wake_lf;   // ACLINT deep-sleep wake (unused: no power controller)
 
 
@@ -370,7 +441,7 @@ wire                     aclint_mtimer_wake_lf;   // ACLINT deep-sleep wake (unu
 
 ahb_interconnect_hiperf #(.NR_M             (1),           // Number of non-executable AHB Managers
                           .NR_S_X           (2),           // Number of AHB Subordinates in executable space
-                          .NR_S_NX          (5),           // Number of AHB Subordinates in non-executable space (SRAM-NX + 3 periph + ACLINT)
+                          .NR_S_NX          (7),           // Number of AHB Subordinates in non-executable space (SRAM-NX + 3 periph + ACLINT + Belenos regs/VRAM)
                           .M_NX_HMASTER_TAG (4'h8),        // Data port tag (data_hmaster_o) on HMASTER[3]
                           .HAUSER_W         (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
                           .ASYNC_RST_EN     (ASYNC_RST_EN) // 1=async active-low reset, 0=synchronous reset
@@ -442,21 +513,21 @@ ahb_interconnect_hiperf #(.NR_M             (1),           // Number of non-exec
     .s_x_hwrite_o          ({s_sram_x_hwrite,     s_rom_hwrite        }),
 
 // NON-EXECUTABLE AHB SUBORDINATE INTERFACES
-    .s_nx_hrdata_i         ({s_aclint_hrdata,    s_periph2_hrdata,    s_periph1_hrdata,    s_periph0_hrdata,    s_sram_nx_hrdata    }),
-    .s_nx_hreadyout_i      ({s_aclint_hreadyout, s_periph2_hreadyout, s_periph1_hreadyout, s_periph0_hreadyout, s_sram_nx_hreadyout }),
-    .s_nx_hresp_i          ({s_aclint_hresp,     s_periph2_hresp,     s_periph1_hresp,     s_periph0_hresp,     s_sram_nx_hresp     }),
-    .s_nx_haddr_o          ({s_aclint_haddr,     s_periph2_haddr,     s_periph1_haddr,     s_periph0_haddr,     s_sram_nx_haddr     }),
-    .s_nx_hauser_o         ({s_aclint_hauser,    s_periph2_hauser,    s_periph1_hauser,    s_periph0_hauser,    s_sram_nx_hauser    }),
-    .s_nx_hburst_o         ({s_aclint_hburst,    s_periph2_hburst,    s_periph1_hburst,    s_periph0_hburst,    s_sram_nx_hburst    }),
-    .s_nx_hmaster_o        ({s_aclint_hmaster,   s_periph2_hmaster,   s_periph1_hmaster,   s_periph0_hmaster,   s_sram_nx_hmaster   }),
-    .s_nx_hmastlock_o      ({s_aclint_hmastlock, s_periph2_hmastlock, s_periph1_hmastlock, s_periph0_hmastlock, s_sram_nx_hmastlock }),
-    .s_nx_hprot_o          ({s_aclint_hprot,     s_periph2_hprot,     s_periph1_hprot,     s_periph0_hprot,     s_sram_nx_hprot     }),
-    .s_nx_hready_o         ({s_aclint_hready,    s_periph2_hready,    s_periph1_hready,    s_periph0_hready,    s_sram_nx_hready    }),
-    .s_nx_hsel_o           ({s_aclint_hsel,      s_periph2_hsel,      s_periph1_hsel,      s_periph0_hsel,      s_sram_nx_hsel      }),
-    .s_nx_hsize_o          ({s_aclint_hsize,     s_periph2_hsize,     s_periph1_hsize,     s_periph0_hsize,     s_sram_nx_hsize     }),
-    .s_nx_htrans_o         ({s_aclint_htrans,    s_periph2_htrans,    s_periph1_htrans,    s_periph0_htrans,    s_sram_nx_htrans    }),
-    .s_nx_hwdata_o         ({s_aclint_hwdata,    s_periph2_hwdata,    s_periph1_hwdata,    s_periph0_hwdata,    s_sram_nx_hwdata    }),
-    .s_nx_hwrite_o         ({s_aclint_hwrite,    s_periph2_hwrite,    s_periph1_hwrite,    s_periph0_hwrite,    s_sram_nx_hwrite    })
+    .s_nx_hrdata_i         ({s_blnsv_hrdata,    s_blnsr_hrdata,    s_aclint_hrdata,    s_periph2_hrdata,    s_periph1_hrdata,    s_periph0_hrdata,    s_sram_nx_hrdata    }),
+    .s_nx_hreadyout_i      ({s_blnsv_hreadyout, s_blnsr_hreadyout, s_aclint_hreadyout, s_periph2_hreadyout, s_periph1_hreadyout, s_periph0_hreadyout, s_sram_nx_hreadyout }),
+    .s_nx_hresp_i          ({s_blnsv_hresp,     s_blnsr_hresp,     s_aclint_hresp,     s_periph2_hresp,     s_periph1_hresp,     s_periph0_hresp,     s_sram_nx_hresp     }),
+    .s_nx_haddr_o          ({s_blnsv_haddr,     s_blnsr_haddr,     s_aclint_haddr,     s_periph2_haddr,     s_periph1_haddr,     s_periph0_haddr,     s_sram_nx_haddr     }),
+    .s_nx_hauser_o         ({s_blnsv_hauser,    s_blnsr_hauser,    s_aclint_hauser,    s_periph2_hauser,    s_periph1_hauser,    s_periph0_hauser,    s_sram_nx_hauser    }),
+    .s_nx_hburst_o         ({s_blnsv_hburst,    s_blnsr_hburst,    s_aclint_hburst,    s_periph2_hburst,    s_periph1_hburst,    s_periph0_hburst,    s_sram_nx_hburst    }),
+    .s_nx_hmaster_o        ({s_blnsv_hmaster,   s_blnsr_hmaster,   s_aclint_hmaster,   s_periph2_hmaster,   s_periph1_hmaster,   s_periph0_hmaster,   s_sram_nx_hmaster   }),
+    .s_nx_hmastlock_o      ({s_blnsv_hmastlock, s_blnsr_hmastlock, s_aclint_hmastlock, s_periph2_hmastlock, s_periph1_hmastlock, s_periph0_hmastlock, s_sram_nx_hmastlock }),
+    .s_nx_hprot_o          ({s_blnsv_hprot,     s_blnsr_hprot,     s_aclint_hprot,     s_periph2_hprot,     s_periph1_hprot,     s_periph0_hprot,     s_sram_nx_hprot     }),
+    .s_nx_hready_o         ({s_blnsv_hready,    s_blnsr_hready,    s_aclint_hready,    s_periph2_hready,    s_periph1_hready,    s_periph0_hready,    s_sram_nx_hready    }),
+    .s_nx_hsel_o           ({s_blnsv_hsel,      s_blnsr_hsel,      s_aclint_hsel,      s_periph2_hsel,      s_periph1_hsel,      s_periph0_hsel,      s_sram_nx_hsel      }),
+    .s_nx_hsize_o          ({s_blnsv_hsize,     s_blnsr_hsize,     s_aclint_hsize,     s_periph2_hsize,     s_periph1_hsize,     s_periph0_hsize,     s_sram_nx_hsize     }),
+    .s_nx_htrans_o         ({s_blnsv_htrans,    s_blnsr_htrans,    s_aclint_htrans,    s_periph2_htrans,    s_periph1_htrans,    s_periph0_htrans,    s_sram_nx_htrans    }),
+    .s_nx_hwdata_o         ({s_blnsv_hwdata,    s_blnsr_hwdata,    s_aclint_hwdata,    s_periph2_hwdata,    s_periph1_hwdata,    s_periph0_hwdata,    s_sram_nx_hwdata    }),
+    .s_nx_hwrite_o         ({s_blnsv_hwrite,    s_blnsr_hwrite,    s_aclint_hwrite,    s_periph2_hwrite,    s_periph1_hwrite,    s_periph0_hwrite,    s_sram_nx_hwrite    })
 );
 
 //=============================================================================
@@ -467,7 +538,7 @@ ahb_interconnect_hiperf #(.NR_M             (1),           // Number of non-exec
 ahb_interconnect_fused #(.NR_M             (1),           // Number of non-executable AHB Managers
                          .NR_S_X_ROM       (1),           // Number of fused ROM controllers
                          .NR_S_X_SRAM      (1),           // Number of fused SRAM controllers
-                         .NR_S_NX          (5),           // Number of non-executable subordinates (SRAM-NX + 3 periph + ACLINT)
+                         .NR_S_NX          (7),           // Number of non-executable subordinates (SRAM-NX + 3 periph + ACLINT + Belenos regs/VRAM)
                          .M_NX_HMASTER_TAG (4'h8),        // Data port tag (data_hmaster_o) on HMASTER[3]
                          .HAUSER_W         (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
                          .FIXED_B_PRIO     (1'b1) ,       // Arbitration scheme for fused ROM/SRAM controllers (0=round-robin, 1=fixed Port-B priority
@@ -536,21 +607,21 @@ ahb_interconnect_fused #(.NR_M             (1),           // Number of non-execu
     .sram_wen_o            ( sram_x_wen                                ),
 
 // NON-EXECUTABLE AHB SUBORDINATE INTERFACES
-    .s_nx_hrdata_i         ({s_aclint_hrdata,    s_periph2_hrdata,    s_periph1_hrdata,    s_periph0_hrdata,    s_sram_nx_hrdata    }),
-    .s_nx_hreadyout_i      ({s_aclint_hreadyout, s_periph2_hreadyout, s_periph1_hreadyout, s_periph0_hreadyout, s_sram_nx_hreadyout }),
-    .s_nx_hresp_i          ({s_aclint_hresp,     s_periph2_hresp,     s_periph1_hresp,     s_periph0_hresp,     s_sram_nx_hresp     }),
-    .s_nx_haddr_o          ({s_aclint_haddr,     s_periph2_haddr,     s_periph1_haddr,     s_periph0_haddr,     s_sram_nx_haddr     }),
-    .s_nx_hauser_o         ({s_aclint_hauser,    s_periph2_hauser,    s_periph1_hauser,    s_periph0_hauser,    s_sram_nx_hauser    }),
-    .s_nx_hburst_o         ({s_aclint_hburst,    s_periph2_hburst,    s_periph1_hburst,    s_periph0_hburst,    s_sram_nx_hburst    }),
-    .s_nx_hmaster_o        ({s_aclint_hmaster,   s_periph2_hmaster,   s_periph1_hmaster,   s_periph0_hmaster,   s_sram_nx_hmaster   }),
-    .s_nx_hmastlock_o      ({s_aclint_hmastlock, s_periph2_hmastlock, s_periph1_hmastlock, s_periph0_hmastlock, s_sram_nx_hmastlock }),
-    .s_nx_hprot_o          ({s_aclint_hprot,     s_periph2_hprot,     s_periph1_hprot,     s_periph0_hprot,     s_sram_nx_hprot     }),
-    .s_nx_hready_o         ({s_aclint_hready,    s_periph2_hready,    s_periph1_hready,    s_periph0_hready,    s_sram_nx_hready    }),
-    .s_nx_hsel_o           ({s_aclint_hsel,      s_periph2_hsel,      s_periph1_hsel,      s_periph0_hsel,      s_sram_nx_hsel      }),
-    .s_nx_hsize_o          ({s_aclint_hsize,     s_periph2_hsize,     s_periph1_hsize,     s_periph0_hsize,     s_sram_nx_hsize     }),
-    .s_nx_htrans_o         ({s_aclint_htrans,    s_periph2_htrans,    s_periph1_htrans,    s_periph0_htrans,    s_sram_nx_htrans    }),
-    .s_nx_hwdata_o         ({s_aclint_hwdata,    s_periph2_hwdata,    s_periph1_hwdata,    s_periph0_hwdata,    s_sram_nx_hwdata    }),
-    .s_nx_hwrite_o         ({s_aclint_hwrite,    s_periph2_hwrite,    s_periph1_hwrite,    s_periph0_hwrite,    s_sram_nx_hwrite    })
+    .s_nx_hrdata_i         ({s_blnsv_hrdata,    s_blnsr_hrdata,    s_aclint_hrdata,    s_periph2_hrdata,    s_periph1_hrdata,    s_periph0_hrdata,    s_sram_nx_hrdata    }),
+    .s_nx_hreadyout_i      ({s_blnsv_hreadyout, s_blnsr_hreadyout, s_aclint_hreadyout, s_periph2_hreadyout, s_periph1_hreadyout, s_periph0_hreadyout, s_sram_nx_hreadyout }),
+    .s_nx_hresp_i          ({s_blnsv_hresp,     s_blnsr_hresp,     s_aclint_hresp,     s_periph2_hresp,     s_periph1_hresp,     s_periph0_hresp,     s_sram_nx_hresp     }),
+    .s_nx_haddr_o          ({s_blnsv_haddr,     s_blnsr_haddr,     s_aclint_haddr,     s_periph2_haddr,     s_periph1_haddr,     s_periph0_haddr,     s_sram_nx_haddr     }),
+    .s_nx_hauser_o         ({s_blnsv_hauser,    s_blnsr_hauser,    s_aclint_hauser,    s_periph2_hauser,    s_periph1_hauser,    s_periph0_hauser,    s_sram_nx_hauser    }),
+    .s_nx_hburst_o         ({s_blnsv_hburst,    s_blnsr_hburst,    s_aclint_hburst,    s_periph2_hburst,    s_periph1_hburst,    s_periph0_hburst,    s_sram_nx_hburst    }),
+    .s_nx_hmaster_o        ({s_blnsv_hmaster,   s_blnsr_hmaster,   s_aclint_hmaster,   s_periph2_hmaster,   s_periph1_hmaster,   s_periph0_hmaster,   s_sram_nx_hmaster   }),
+    .s_nx_hmastlock_o      ({s_blnsv_hmastlock, s_blnsr_hmastlock, s_aclint_hmastlock, s_periph2_hmastlock, s_periph1_hmastlock, s_periph0_hmastlock, s_sram_nx_hmastlock }),
+    .s_nx_hprot_o          ({s_blnsv_hprot,     s_blnsr_hprot,     s_aclint_hprot,     s_periph2_hprot,     s_periph1_hprot,     s_periph0_hprot,     s_sram_nx_hprot     }),
+    .s_nx_hready_o         ({s_blnsv_hready,    s_blnsr_hready,    s_aclint_hready,    s_periph2_hready,    s_periph1_hready,    s_periph0_hready,    s_sram_nx_hready    }),
+    .s_nx_hsel_o           ({s_blnsv_hsel,      s_blnsr_hsel,      s_aclint_hsel,      s_periph2_hsel,      s_periph1_hsel,      s_periph0_hsel,      s_sram_nx_hsel      }),
+    .s_nx_hsize_o          ({s_blnsv_hsize,     s_blnsr_hsize,     s_aclint_hsize,     s_periph2_hsize,     s_periph1_hsize,     s_periph0_hsize,     s_sram_nx_hsize     }),
+    .s_nx_htrans_o         ({s_blnsv_htrans,    s_blnsr_htrans,    s_aclint_htrans,    s_periph2_htrans,    s_periph1_htrans,    s_periph0_htrans,    s_sram_nx_htrans    }),
+    .s_nx_hwdata_o         ({s_blnsv_hwdata,    s_blnsr_hwdata,    s_aclint_hwdata,    s_periph2_hwdata,    s_periph1_hwdata,    s_periph0_hwdata,    s_sram_nx_hwdata    }),
+    .s_nx_hwrite_o         ({s_blnsv_hwrite,    s_blnsr_hwrite,    s_aclint_hwrite,    s_periph2_hwrite,    s_periph1_hwrite,    s_periph0_hwrite,    s_sram_nx_hwrite    })
 );
 
 // Slice the 30-bit fused-controller address output down to the on-chip memory
@@ -571,7 +642,7 @@ assign s_sram_x_hclk_en = 1'b0;
 `else
 
 ahb_interconnect_generic #(.NR_M          (2),           // Number of AHB Managers
-                           .NR_S          (7),           // Number of AHB Subordinates (ROM + SRAM-X + SRAM-NX + 3 periph + ACLINT)
+                           .NR_S          (9),           // Number of AHB Subordinates (ROM + SRAM-X + SRAM-NX + 3 periph + ACLINT + Belenos regs/VRAM)
                            .M_HMASTER_TAG (8'h80),       // Data port tag (data_hmaster_o) on HMASTER[3]
                            .HAUSER_W      (HAUSER_W),    // Width of the HAUSER bus (min value is 1)
                            .ASYNC_RST_EN  (ASYNC_RST_EN) // 1=async active-low reset, 0=synchronous reset
@@ -608,21 +679,21 @@ ahb_interconnect_generic #(.NR_M          (2),           // Number of AHB Manage
     .s_decoder_addr_o      ( s_decoder_addr                            ),
 
 // AHB SUBORDINATE INTERFACES
-    .s_hrdata_i            ({s_aclint_hrdata,    s_periph2_hrdata,    s_periph1_hrdata,    s_periph0_hrdata,    s_sram_nx_hrdata,    s_sram_x_hrdata,     s_rom_hrdata    }),
-    .s_hreadyout_i         ({s_aclint_hreadyout, s_periph2_hreadyout, s_periph1_hreadyout, s_periph0_hreadyout, s_sram_nx_hreadyout, s_sram_x_hreadyout,  s_rom_hreadyout }),
-    .s_hresp_i             ({s_aclint_hresp,     s_periph2_hresp,     s_periph1_hresp,     s_periph0_hresp,     s_sram_nx_hresp,     s_sram_x_hresp,      s_rom_hresp     }),
-    .s_haddr_o             ({s_aclint_haddr,     s_periph2_haddr,     s_periph1_haddr,     s_periph0_haddr,     s_sram_nx_haddr,     s_sram_x_haddr,      s_rom_haddr     }),
-    .s_hauser_o            ({s_aclint_hauser,    s_periph2_hauser,    s_periph1_hauser,    s_periph0_hauser,    s_sram_nx_hauser,    s_sram_x_hauser,     s_rom_hauser    }),
-    .s_hburst_o            ({s_aclint_hburst,    s_periph2_hburst,    s_periph1_hburst,    s_periph0_hburst,    s_sram_nx_hburst,    s_sram_x_hburst,     s_rom_hburst    }),
-    .s_hmaster_o           ({s_aclint_hmaster,   s_periph2_hmaster,   s_periph1_hmaster,   s_periph0_hmaster,   s_sram_nx_hmaster,   s_sram_x_hmaster,    s_rom_hmaster   }),
-    .s_hmastlock_o         ({s_aclint_hmastlock, s_periph2_hmastlock, s_periph1_hmastlock, s_periph0_hmastlock, s_sram_nx_hmastlock, s_sram_x_hmastlock,  s_rom_hmastlock }),
-    .s_hprot_o             ({s_aclint_hprot,     s_periph2_hprot,     s_periph1_hprot,     s_periph0_hprot,     s_sram_nx_hprot,     s_sram_x_hprot,      s_rom_hprot     }),
-    .s_hready_o            ({s_aclint_hready,    s_periph2_hready,    s_periph1_hready,    s_periph0_hready,    s_sram_nx_hready,    s_sram_x_hready,     s_rom_hready    }),
-    .s_hsel_o              ({s_aclint_hsel,      s_periph2_hsel,      s_periph1_hsel,      s_periph0_hsel,      s_sram_nx_hsel,      s_sram_x_hsel,       s_rom_hsel      }),
-    .s_hsize_o             ({s_aclint_hsize,     s_periph2_hsize,     s_periph1_hsize,     s_periph0_hsize,     s_sram_nx_hsize,     s_sram_x_hsize,      s_rom_hsize     }),
-    .s_htrans_o            ({s_aclint_htrans,    s_periph2_htrans,    s_periph1_htrans,    s_periph0_htrans,    s_sram_nx_htrans,    s_sram_x_htrans,     s_rom_htrans    }),
-    .s_hwdata_o            ({s_aclint_hwdata,    s_periph2_hwdata,    s_periph1_hwdata,    s_periph0_hwdata,    s_sram_nx_hwdata,    s_sram_x_hwdata,     s_rom_hwdata    }),
-    .s_hwrite_o            ({s_aclint_hwrite,    s_periph2_hwrite,    s_periph1_hwrite,    s_periph0_hwrite,    s_sram_nx_hwrite,    s_sram_x_hwrite,     s_rom_hwrite    })
+    .s_hrdata_i            ({s_blnsv_hrdata,    s_blnsr_hrdata,    s_aclint_hrdata,    s_periph2_hrdata,    s_periph1_hrdata,    s_periph0_hrdata,    s_sram_nx_hrdata,    s_sram_x_hrdata,    s_rom_hrdata    }),
+    .s_hreadyout_i         ({s_blnsv_hreadyout, s_blnsr_hreadyout, s_aclint_hreadyout, s_periph2_hreadyout, s_periph1_hreadyout, s_periph0_hreadyout, s_sram_nx_hreadyout, s_sram_x_hreadyout, s_rom_hreadyout }),
+    .s_hresp_i             ({s_blnsv_hresp,     s_blnsr_hresp,     s_aclint_hresp,     s_periph2_hresp,     s_periph1_hresp,     s_periph0_hresp,     s_sram_nx_hresp,     s_sram_x_hresp,     s_rom_hresp     }),
+    .s_haddr_o             ({s_blnsv_haddr,     s_blnsr_haddr,     s_aclint_haddr,     s_periph2_haddr,     s_periph1_haddr,     s_periph0_haddr,     s_sram_nx_haddr,     s_sram_x_haddr,     s_rom_haddr     }),
+    .s_hauser_o            ({s_blnsv_hauser,    s_blnsr_hauser,    s_aclint_hauser,    s_periph2_hauser,    s_periph1_hauser,    s_periph0_hauser,    s_sram_nx_hauser,    s_sram_x_hauser,    s_rom_hauser    }),
+    .s_hburst_o            ({s_blnsv_hburst,    s_blnsr_hburst,    s_aclint_hburst,    s_periph2_hburst,    s_periph1_hburst,    s_periph0_hburst,    s_sram_nx_hburst,    s_sram_x_hburst,    s_rom_hburst    }),
+    .s_hmaster_o           ({s_blnsv_hmaster,   s_blnsr_hmaster,   s_aclint_hmaster,   s_periph2_hmaster,   s_periph1_hmaster,   s_periph0_hmaster,   s_sram_nx_hmaster,   s_sram_x_hmaster,   s_rom_hmaster   }),
+    .s_hmastlock_o         ({s_blnsv_hmastlock, s_blnsr_hmastlock, s_aclint_hmastlock, s_periph2_hmastlock, s_periph1_hmastlock, s_periph0_hmastlock, s_sram_nx_hmastlock, s_sram_x_hmastlock, s_rom_hmastlock }),
+    .s_hprot_o             ({s_blnsv_hprot,     s_blnsr_hprot,     s_aclint_hprot,     s_periph2_hprot,     s_periph1_hprot,     s_periph0_hprot,     s_sram_nx_hprot,     s_sram_x_hprot,     s_rom_hprot     }),
+    .s_hready_o            ({s_blnsv_hready,    s_blnsr_hready,    s_aclint_hready,    s_periph2_hready,    s_periph1_hready,    s_periph0_hready,    s_sram_nx_hready,    s_sram_x_hready,    s_rom_hready    }),
+    .s_hsel_o              ({s_blnsv_hsel,      s_blnsr_hsel,      s_aclint_hsel,      s_periph2_hsel,      s_periph1_hsel,      s_periph0_hsel,      s_sram_nx_hsel,      s_sram_x_hsel,      s_rom_hsel      }),
+    .s_hsize_o             ({s_blnsv_hsize,     s_blnsr_hsize,     s_aclint_hsize,     s_periph2_hsize,     s_periph1_hsize,     s_periph0_hsize,     s_sram_nx_hsize,     s_sram_x_hsize,     s_rom_hsize     }),
+    .s_htrans_o            ({s_blnsv_htrans,    s_blnsr_htrans,    s_aclint_htrans,    s_periph2_htrans,    s_periph1_htrans,    s_periph0_htrans,    s_sram_nx_htrans,    s_sram_x_htrans,    s_rom_htrans    }),
+    .s_hwdata_o            ({s_blnsv_hwdata,    s_blnsr_hwdata,    s_aclint_hwdata,    s_periph2_hwdata,    s_periph1_hwdata,    s_periph0_hwdata,    s_sram_nx_hwdata,    s_sram_x_hwdata,    s_rom_hwdata    }),
+    .s_hwrite_o            ({s_blnsv_hwrite,    s_blnsr_hwrite,    s_aclint_hwrite,    s_periph2_hwrite,    s_periph1_hwrite,    s_periph0_hwrite,    s_sram_nx_hwrite,    s_sram_x_hwrite,    s_rom_hwrite    })
  );
 
 `endif
@@ -636,7 +707,7 @@ ahb_interconnect_generic #(.NR_M          (2),           // Number of AHB Manage
 // No arbitration, only one NX master
 assign m_nx_grant = m_nx_request;
 
-ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE)) ahb_decoder_x_inst (
+ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE), .VRAM_SIZE(VRAM_SIZE)) ahb_decoder_x_inst (
     .decoder_addr_i        ( s_x_decoder_addr                          ),
     .decoder_1hot_o        ( s_x_decoder_1hot                          )
 );
@@ -644,7 +715,7 @@ ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM
 // No arbitration, only one NX master
 assign m_nx_grant = m_nx_request;
 
-ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE)) ahb_decoder_x_inst (
+ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE), .VRAM_SIZE(VRAM_SIZE)) ahb_decoder_x_inst (
     .decoder_addr_i        ( s_x_decoder_addr                          ),
     .decoder_1hot_o        ( s_x_decoder_1hot                          )
 );
@@ -660,7 +731,7 @@ ahb_arbiter #(.ASYNC_RST_EN(ASYNC_RST_EN)) ahb_arbiter_inst (
 
 `endif
 
-ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE)) ahb_decoder_inst   (
+ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE), .VRAM_SIZE(VRAM_SIZE)) ahb_decoder_inst   (
 
     .decoder_addr_i        ( s_decoder_addr                            ),
     .decoder_1hot_o        ( s_decoder_1hot                            )
@@ -1001,7 +1072,44 @@ ahb_aclint #(.SU_MODE_EN    (1),                       // S-mode software IRQ (S
 
 
 //=============================================================================
-// 12) GLOBAL CLOCK ENABLE
+// 12) BELENOS PORTS
+//=============================================================================
+//
+//   Register port: decoder bit 7, 4KB at 0x10043000.
+//   VRAM window:   decoder bit 8, VRAM_WORDS*4 bytes at 0x82000000.
+//   Belenos itself, with its VRAM and LUT macros, is in the top level.
+//
+assign blnsr_hsel_o       = s_blnsr_hsel;
+assign blnsr_haddr_o      = s_blnsr_haddr;
+assign blnsr_htrans_o     = s_blnsr_htrans;
+assign blnsr_hwrite_o     = s_blnsr_hwrite;
+assign blnsr_hsize_o      = s_blnsr_hsize;
+assign blnsr_hprot_o      = s_blnsr_hprot;
+assign blnsr_hsmode_o     = s_blnsr_hauser[0];
+assign blnsr_hready_o     = s_blnsr_hready;
+assign blnsr_hwdata_o     = s_blnsr_hwdata;
+assign s_blnsr_hrdata     = blnsr_hrdata_i;
+assign s_blnsr_hreadyout  = blnsr_hreadyout_i;
+assign s_blnsr_hresp      = blnsr_hresp_i;
+
+assign blnsv_hsel_o       = s_blnsv_hsel;
+assign blnsv_haddr_o      = s_blnsv_haddr;
+assign blnsv_htrans_o     = s_blnsv_htrans;
+assign blnsv_hwrite_o     = s_blnsv_hwrite;
+assign blnsv_hsize_o      = s_blnsv_hsize;
+assign blnsv_hprot_o      = s_blnsv_hprot;
+assign blnsv_hsmode_o     = s_blnsv_hauser[0];
+assign blnsv_hready_o     = s_blnsv_hready;
+assign blnsv_hwdata_o     = s_blnsv_hwdata;
+assign s_blnsv_hrdata     = blnsv_hrdata_i;
+assign s_blnsv_hreadyout  = blnsv_hreadyout_i;
+assign s_blnsv_hresp      = blnsv_hresp_i;
+
+assign s_blns_hclk_en     = blns_hclk_en_i;
+
+
+//=============================================================================
+// 13) GLOBAL CLOCK ENABLE
 //=============================================================================
 
 assign  hclk_en_o       =   interconnect_hclk_en  |
@@ -1011,7 +1119,8 @@ assign  hclk_en_o       =   interconnect_hclk_en  |
                             s_periph0_hclk_en     |
                             s_periph1_hclk_en     |
                             s_periph2_hclk_en     |
-                            s_aclint_hclk_en      ;
+                            s_aclint_hclk_en      |
+                            s_blns_hclk_en        ;
 
 
 //=============================================================================
@@ -1034,16 +1143,20 @@ wire  s_periph0_sideband_unused = |{1'b0, s_periph0_haddr, s_periph0_hburst, s_p
 wire  s_periph1_sideband_unused = |{1'b0, s_periph1_haddr, s_periph1_hburst, s_periph1_hmaster, s_periph1_hmastlock};
 wire  s_periph2_sideband_unused = |{1'b0, s_periph2_haddr, s_periph2_hburst, s_periph2_hmaster, s_periph2_hmastlock};
 wire  s_aclint_sideband_unused  = |{1'b0, s_aclint_haddr,  s_aclint_hburst,  s_aclint_hmaster,  s_aclint_hmastlock};
+wire  s_blnsr_sideband_unused   = |{1'b0, s_blnsr_hburst, s_blnsr_hmaster, s_blnsr_hmastlock};
+wire  s_blnsv_sideband_unused   = |{1'b0, s_blnsv_hburst, s_blnsv_hmaster, s_blnsv_hmastlock};
+
+// LUT macro: only 24 of the 32 data bits carry an RGB888 entry.
 
 // ACLINT deep-sleep wake output: no power controller in this example.
 wire  aclint_mtimer_wake_lf_unused = aclint_mtimer_wake_lf;
 
-// HIPERF/FUSED only: the executable-space decoder one-hot is 7 bits wide but only
+// HIPERF/FUSED only: the executable-space decoder one-hot is 9 bits wide but only
 // the low 2 (ROM, SRAM-X) are decoded; the upper bits are unused.
 `ifdef HIPERF
-wire  s_x_decoder_1hot_unused = |{1'b0, s_x_decoder_1hot[6:2]};
+wire  s_x_decoder_1hot_unused = |{1'b0, s_x_decoder_1hot[8:2]};
 `elsif FUSED
-wire  s_x_decoder_1hot_unused = |{1'b0, s_x_decoder_1hot[6:2]};
+wire  s_x_decoder_1hot_unused = |{1'b0, s_x_decoder_1hot[8:2]};
 `endif
 
 // FUSED only: the fused controllers emit a 30-bit address; only the low bits

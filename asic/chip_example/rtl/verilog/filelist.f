@@ -73,3 +73,10 @@ chip_example.v
 +incdir+../../../../../arvern-ips/arv_primitives/rtl/verilog/
 +incdir+../../../../../arvern-ips/ahb_aclint/rtl/verilog/
 -f ../../../../../arvern-ips/ahb_aclint/rtl/verilog/filelist.f
+
+//=============================================================================
+// Belenos graphic controller (sibling repository arvern-belenos)
+//=============================================================================
+
++incdir+../../../../../arvern-belenos/rtl/verilog/
+-f ../../../../../arvern-belenos/rtl/verilog/filelist.f

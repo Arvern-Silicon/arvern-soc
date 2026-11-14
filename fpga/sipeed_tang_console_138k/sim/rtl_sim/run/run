@@ -1,0 +1,252 @@
+#!/bin/bash
+# ----------------------------------------------------------------------------
+#          _    _           Family:    aRVern System IPs
+#         / \__/ \          File:      run
+#        /   /\   \         --------------------------------------------
+#    ===/   /=========      Copyright: (c) 2026, aRVern-dev
+#      /   / RV \   \       Contact:   arvernsilicon@gmail.com
+#     /___/______\___\      GitHub:    https://github.com/Arvern-Silicon
+#
+# SPDX-License-Identifier: BSD-3-Clause
+# Full license text is available in the LICENSE file at the repository root.
+# ----------------------------------------------------------------------------
+
+###############################################################################
+#                            Parameter Check                                  #
+###############################################################################
+
+# List available tests (must have both stimulus file and software directory)
+list_tests() {
+    echo ""
+    echo "Available tests:"
+    for stim in ../src/*.v; do
+        name=$(basename "$stim" .v)
+        # Skip submit.f-related files
+        if [ "$name" = "submit" ]; then continue; fi
+        if [ -d "../../../software/apps/${name}" ]; then
+            echo "  - ${name}"
+        fi
+    done
+    echo ""
+}
+
+if [ $# -lt 1 ]; then
+    echo ""
+    echo "USAGE   : ./run <test_name> [-nodump] [-screen | -screen_view] [-free] [-frames A:B] [-collapse]"
+    echo ""
+    echo "  -nodump       no waveform (long runs)"
+    echo "  -screen       virtual board window: panel, LEDs, clickable switches and keys"
+    echo "                (Verilator + SDL2; implies -nodump and no timeout)"
+    echo "  -screen_view  window without input: the stimulus keeps the switches and keys"
+    echo "  -free         run the firmware with the free-running stimulus (src/free_run.v:"
+    echo "                both panels attached, no checks, ends when the window closes)"
+    echo "  -frames A:B   asphalt.log from the end of frame wait A to the end of frame"
+    echo "                wait B (demo_kit trace_mark); every frame start is noted"
+    echo "                \"# mark <n>\" whenever the firmware has trace_mark"
+    echo "  -collapse     asphalt.log: a short loop repeating identical lines (a busy"
+    echo "                wait) is logged twice, then one \"# repeat:\" note"
+    echo ""
+    echo "  SIMULATION_FW_DEFINES=\"-DNAME=V ...\" adds firmware defines (e.g. a demo's"
+    echo "                short profiling run)"
+    echo ""
+    echo "Example : ./run demo_leds"
+    echo "          ./run demo_ogfx430 -screen"
+    echo "          ./run demo_ogfx430 -screen -free"
+    list_tests
+    exit 1
+fi
+
+TEST_NAME=$1
+shift
+
+# The run directory: run/ itself, or a sibling (run_all's run_<test>/), so that
+# several runs can go side by side; every path below is relative to it
+RUN_DIR=$(basename "$(pwd)")
+
+NODUMP=${SIMULATION_NODUMP:-0}
+SCREEN=0
+SCREEN_INPUT=1
+FREE_RUN=0
+FRAMES=
+COLLAPSE=0
+while [ $# -gt 0 ]; do
+    case $1 in
+        -nodump) NODUMP=1 ;;
+        -screen) SCREEN=1 ;;
+        -screen_view) SCREEN=1; SCREEN_INPUT=0 ;;
+        -free) FREE_RUN=1 ;;
+        -frames) FRAMES=$2; shift ;;
+        -collapse) COLLAPSE=1 ;;
+        *) echo "ERROR: unknown option '$1'"; exit 1 ;;
+    esac
+    shift
+done
+
+###############################################################################
+#                          Check test exists                                  #
+###############################################################################
+
+# Check for stimulus file and software directory (-free: any app, generic stimulus)
+if [ $FREE_RUN -eq 1 ]; then
+    STIM_NAME=free_run
+else
+    STIM_NAME=${TEST_NAME}
+fi
+if [ ! -e ../src/${STIM_NAME}.v ] || [ ! -d ../../../software/apps/${TEST_NAME} ]; then
+    echo ""
+    echo "ERROR: Test '${TEST_NAME}' not found"
+    list_tests
+    exit 1
+fi
+
+STIMULUS_FILE="../src/${STIM_NAME}.v"
+
+###############################################################################
+#                Generate toolchain config from RTL                           #
+###############################################################################
+
+RTL_FILE="../../../rtl/verilog/arvern_fpga.v"
+
+echo ""
+echo " ====================================="
+echo "|  Generating toolchain configuration"
+echo " ====================================="
+
+../bin/gen_march_config.sh ${RTL_FILE} ./march_config.sh
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to generate march_config.sh"
+    exit 1
+fi
+
+###############################################################################
+#                        Compile software                                     #
+###############################################################################
+
+echo ""
+echo " ====================================="
+echo "|  Compiling software: ${TEST_NAME}"
+echo " ====================================="
+echo ""
+
+cd ../../../software/apps/${TEST_NAME}
+# make builds both flavours: ${TEST_NAME}.* for the board, ${TEST_NAME}_sim.*
+# (-DSIMULATION + SIMULATION_FW_DEFINES) for this bench
+make SIM_FW_DEFINES="${SIMULATION_FW_DEFINES:-}"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Software compilation failed"
+    exit 1
+fi
+# Trace controls (plusargs of bench/verilog probes_instructions.v)
+NM=$(source ../../../sim/rtl_sim/${RUN_DIR}/march_config.sh && echo "${TC_OBJDUMP/objdump/nm}")
+MARK_ADDR=$(${NM:-riscv-none-elf-nm} ${TEST_NAME}_sim.elf 2>/dev/null | awk '$3 == "trace_mark" {print $1}')
+# The firmware's global variables for the stimulus: `FW_<name> = their address
+${NM:-riscv-none-elf-nm} ${TEST_NAME}_sim.elf 2>/dev/null | \
+    awk '$2 ~ /^[BDGS]$/ && $3 ~ /^[A-Za-z_][A-Za-z0-9_]*$/ {printf "`define FW_%s 32%sh%s\n", $3, "\047", $1}' \
+    > ../../../sim/rtl_sim/${RUN_DIR}/firmware_syms.vh
+PLUS=""
+if [ -n "$MARK_ADDR" ]; then
+    PLUS="+trace_mark=${MARK_ADDR}"
+fi
+if [ -n "$FRAMES" ]; then
+    if [ -z "$MARK_ADDR" ] || ! [[ "$FRAMES" =~ ^[0-9]+:[0-9]+$ ]]; then
+        echo "ERROR: -frames A:B needs the firmware's trace_mark (demo_kit)"
+        exit 1
+    fi
+    PLUS="$PLUS +trace_start=${FRAMES%%:*} +trace_stop=${FRAMES##*:}"
+fi
+if [ $COLLAPSE -eq 1 ]; then
+    PLUS="$PLUS +trace_collapse"
+fi
+export SIMULATION_PLUSARGS="${SIMULATION_PLUSARGS:-} $PLUS"
+cd ../../../sim/rtl_sim/${RUN_DIR}
+
+###############################################################################
+#                     Convert to memory file                                  #
+###############################################################################
+
+echo ""
+echo " ====================================="
+echo "|  Converting to memory file"
+echo " ====================================="
+echo ""
+
+# Path to ihex2mem.py from the arvern core
+IHEX2MEM="../../../../../../arvern/sim/rtl_sim/bin/ihex2mem.py"
+IHEX_FILE="../../../software/apps/${TEST_NAME}/${TEST_NAME}_sim.ihex"
+
+if [ ! -e ${IHEX_FILE} ]; then
+    echo "ERROR: Intel HEX file ${IHEX_FILE} not found"
+    exit 1
+fi
+
+# Convert ihex to mem (program memory at 0x20000000, ROM_SIZE of arvern_fpga.v)
+ROM_KB=$(sed -n 's/^parameter  *ROM_SIZE  *= *\([0-9]*\)\*1024.*/\1/p' ../../../rtl/verilog/arvern_fpga.v)   # program memory size (arvern_fpga.v)
+[ -n "$ROM_KB" ] || { echo "ERROR: no ROM_SIZE in arvern_fpga.v"; exit 1; }
+python3 ${IHEX2MEM} -i ${IHEX_FILE} -o pmem.mem -b 0x20000000 -s $((ROM_KB * 1024))
+if [ $? -ne 0 ]; then
+    echo "ERROR: ihex to mem conversion failed"
+    exit 1
+fi
+python3 ../bin/mem_banks.py pmem.mem --banks $((ROM_KB / 8)) || exit 1
+
+###############################################################################
+#                      Setup stimulus                                         #
+###############################################################################
+
+# Create symlink to stimulus file; drop the panel images of a previous run
+rm -f stimulus.v
+rm -rf frame_log
+mkdir -p frame_log
+ln -s ${STIMULUS_FILE} stimulus.v
+
+###############################################################################
+#                      Run simulation                                         #
+###############################################################################
+
+echo ""
+echo " ====================================="
+echo "|  Running RTL simulation: ${TEST_NAME}"
+echo " ====================================="
+echo ""
+
+# Waveform dump on by default (-nodump or SIMULATION_NODUMP=1 to drop it)
+# Virtual board: Verilator only, no waveform, no timeout. A stimulus that drives
+# the switches and keys itself carries "// vscreen: no_input"; "view=<v>" sets
+# the initial panel view (panel, transpose, cw, ccw).
+if [ $SCREEN -eq 1 ]; then
+    VERILOG_SIMULATOR=${VERILOG_SIMULATOR:-verilator}
+    export VERILOG_SIMULATOR
+    VSOPTS=$(sed -n 's#^// *vscreen: *##p' ${STIMULUS_FILE} | head -1)
+    case " $VSOPTS " in *" no_input "*) SCREEN_INPUT=0 ;; esac
+    VIEW=$(echo " $VSOPTS " | sed -n 's#.* view=\([a-z]*\) .*#\1#p')
+    [ -n "$VIEW" ] && export VSCREEN_VIEW=${VSCREEN_VIEW:-$VIEW}
+    NODUMP=1
+    SIMULATION_DEFINES="${SIMULATION_DEFINES:-} -D NO_TIMEOUT"
+    export SIMULATION_SCREEN=1
+    export SIMULATION_SCREEN_INPUT=${SCREEN_INPUT}
+fi
+export SIMULATION_NODUMP=${NODUMP}
+
+# Pass extra defines (e.g. NO_TIMEOUT); a stimulus adds its own with a
+# "// defines: -D NAME ..." line (e.g. -D TIMEOUT_MS=1000: a longer limit than
+# the 500 ms every test gets)
+TEST_DEFINES=$(sed -n 's#^// *defines: *##p' ${STIMULUS_FILE} | head -1)
+export SIMULATION_DEFINES="${SIMULATION_DEFINES:-} ${TEST_DEFINES}"
+
+../bin/rtlsim.sh tb_arvern_fpga ./stimulus.v ../../../bench/verilog/submit.f
+SIM_STATUS=$?
+
+###############################################################################
+#                      Panel images                                           #
+###############################################################################
+
+# A stimulus with a panel model saves frame_log/fb_<n>.hex images; convert them to PNG.
+# Its "// fb2png: <options>" line, if any, passes options (e.g. --transpose).
+if ls frame_log/fb_*.hex >/dev/null 2>&1; then
+    FB2PNG_ARGS=$(sed -n 's#^// *fb2png: *##p' ${STIMULUS_FILE} | head -1)
+    echo ""
+    echo "Converting panel images (frame_log/fb_*.hex -> fb_*.png) ${FB2PNG_ARGS}"
+    python3 ../bin/fb2png.py ${FB2PNG_ARGS} frame_log/fb_*.hex > /dev/null
+fi
+
+exit ${SIM_STATUS}

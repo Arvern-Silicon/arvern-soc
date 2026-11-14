@@ -14,9 +14,9 @@
 //----------------------------------------------------------------------------
 
 module  ahb_decoder #(
-    parameter             ROM_SIZE     = 8*1024,                // Size of the memory instance (in Bytes)
-    parameter             SRAM_X_SIZE  = 8*1024,                // Size of the memory instance (in Bytes)
-    parameter             SRAM_NX_SIZE = 8*1024                 // Size of the memory instance (in Bytes)
+    parameter             ROM_SIZE     = 8*1024,                // Size of the program memory (in Bytes)
+    parameter             SRAM_NX_SIZE = 8*1024,                // Size of the data SRAM (in Bytes)
+    parameter             VRAM_SIZE    = 8*1024                 // Size of the Belenos VRAM window (in Bytes)
 ) (
 
 // DECODER INTERFACES
@@ -29,13 +29,13 @@ module  ahb_decoder #(
 // AHB DECODER
 //=============================================================================
 
-assign decoder_1hot_o[0]  = (decoder_addr_i>=32'h20000000) & (decoder_addr_i<(32'h20000000+ROM_SIZE    )); //   Program SRAM (writable)
-assign decoder_1hot_o[1]  = (decoder_addr_i>=32'h80000000) & (decoder_addr_i<(32'h80000000+SRAM_X_SIZE )); //   Executable SRAM
-assign decoder_1hot_o[2]  = (decoder_addr_i>=32'h81000000) & (decoder_addr_i<(32'h81000000+SRAM_NX_SIZE)); //   Non-executable SRAM
-assign decoder_1hot_o[3]  = (decoder_addr_i>=32'h10040000) & (decoder_addr_i<(32'h10040080             )); //   128B AHB PERIPH #0
-assign decoder_1hot_o[4]  = (decoder_addr_i>=32'h10041000) & (decoder_addr_i<(32'h10041080             )); //   128B AHB PERIPH #1
-assign decoder_1hot_o[5]  = (decoder_addr_i>=32'h10042000) & (decoder_addr_i<(32'h10042080             )); //   128B AHB PERIPH #2
-assign decoder_1hot_o[6]  = (decoder_addr_i>=32'h02000000) & (decoder_addr_i<(32'h02010000             )); //   64KB ACLINT (MSWI/MTIMER/SSWI)
+assign decoder_1hot_o[0]  = (decoder_addr_i>=32'h20000000) & (decoder_addr_i<(32'h20000000+ROM_SIZE    )); //   Program SRAM (writable, executable)
+assign decoder_1hot_o[1]  = (decoder_addr_i>=32'h80000000) & (decoder_addr_i<(32'h80000000+SRAM_NX_SIZE)); //   Data SRAM (non-executable)
+assign decoder_1hot_o[2]  = (decoder_addr_i>=32'h10040000) & (decoder_addr_i<(32'h10050000             )); //   64KB AHB-to-APB bridge (board I/O, GPIOs)
+assign decoder_1hot_o[3]  = (decoder_addr_i>=32'h02000000) & (decoder_addr_i<(32'h02010000             )); //   64KB ACLINT (MSWI/MTIMER/SSWI)
+assign decoder_1hot_o[4]  = (decoder_addr_i>=32'h10050000) & (decoder_addr_i<(32'h10051000             )); //   4KB  Belenos registers
+assign decoder_1hot_o[5]  = (decoder_addr_i>=32'h82000000) & (decoder_addr_i<(32'h82000000+VRAM_SIZE   )); //   Belenos VRAM window
+assign decoder_1hot_o[6]  = (decoder_addr_i>=32'h0C000000) & (decoder_addr_i<(32'h0C400000             )); //   4MB  PLIC
 
 
 endmodule

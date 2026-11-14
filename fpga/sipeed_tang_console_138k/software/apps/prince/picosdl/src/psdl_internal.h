@@ -1,0 +1,291 @@
+/*
+ * picosdl internals: the tunables, the backend interface, and the few things
+ * the modules share with each other.
+ *
+ * "Backend" here means the platform half - the thing that owns a panel, a DAC
+ * and an input device. picosdl proper never talks to hardware; it draws into a
+ * framebuffer and calls these.
+ */
+#ifndef PICOSDL_INTERNAL_H
+#define PICOSDL_INTERNAL_H
+
+#include "SDL2/SDL.h"
+
+/* --------------------------------------------------------------- tunables */
+
+/*
+ * The nominal canvas: VGA mode 13h minus the borders. The panel is 320x240, so
+ * this is letterboxed by the video backend rather than scaled.
+ *
+ * It sizes nothing. picosdl allocates no framebuffer - the client brings its own
+ * and says how big it is at PSDL_CreateWindow() or PSDL_PresentBuffer(), and the
+ * backend centres whatever height it is given. These are what the panel is set up
+ * for and what the host backend captures into.
+ */
+#ifndef PSDL_SCREEN_W
+#define PSDL_SCREEN_W 320
+#endif
+#ifndef PSDL_SCREEN_H
+#define PSDL_SCREEN_H 200
+#endif
+
+/*
+ * How pixels reach the panel: 8 or 16.
+ *
+ * 8 is picosdl as described everywhere else - one global palette, one byte per
+ * pixel, the CLUT expanded by the PIO, and every blitter and surface in this
+ * library working in that format.
+ *
+ * 16 is RGB565, for a client that produces it directly - anything with its own
+ * renderer, since RGB565 is what the panel wants anyway. The palette and the
+ * blitters are index operations and have nothing to do at that depth, but the
+ * canvas, the present path and everything else work the same way.
+ *
+ * This says what a pixel IS and nothing else. The client allocates every
+ * framebuffer either way, and says how big it is when it presents one.
+ */
+#ifndef PSDL_COLOR_DEPTH
+#define PSDL_COLOR_DEPTH 8
+#endif
+
+#if PSDL_COLOR_DEPTH != 8 && PSDL_COLOR_DEPTH != 16
+#error "PSDL_COLOR_DEPTH must be 8 or 16"
+#endif
+
+/*
+ * The LIFO arena that backs peel surfaces. Peels are created and restored in
+ * strict stack order, so a bump pointer is enough and fragmentation is
+ * structurally impossible.
+ *
+ * 16 KB, against a 6,700-byte peak measured over 400,000 presents of one client
+ * covering its title screen, attract demo and gameplay. Paths that wait for a
+ * human are not in that measurement - a name-entry screen that holds a peel open
+ * while the player types pins everything allocated above it - so the margin is
+ * there for those, not for growth.
+ *
+ * When this runs out, resist raising it until you have read PSDL_DumpArena().
+ * The arena has been exhausted twice, once by a 16.5 KB surface nothing read and
+ * once by a leak, and on both occasions the total looked like ordinary demand.
+ * The exhaustion message names the allocation that happened to be last, never
+ * the one at fault; the dump names both.
+ */
+#ifndef PSDL_ARENA_BYTES
+#define PSDL_ARENA_BYTES (16 * 1024)
+#endif
+
+/*
+ * Every surface that exists at once: the screen buffers, whatever the caller
+ * creates, and one header per live arena surface.
+ *
+ * The game's demand, counted rather than guessed:
+ *
+ *   2    the window surface and the offscreen buffer
+ *   100  the built-in font, one per glyph (0x20..0x83). These are permanent
+ *        and their pixels are static, but each still needs a header.
+ *   ~50  peels, capped by add_peel()
+ *   few  dialogs and transient blits
+ *
+ * 96 was sized before the font went through picosdl and is two short of the
+ * font alone, which showed up as an immediate panic at start-up rather than
+ * anything subtle. 192 covers the above with room to spare, at about 68 bytes
+ * a header - 13 KB, against 520 KB of SRAM.
+ */
+#ifndef PSDL_MAX_SURFACES
+#define PSDL_MAX_SURFACES 192
+#endif
+
+/* Bytes per pixel in this build's format, for sizing and for pitch arithmetic. */
+#define PSDL_BYTES_PER_PIXEL (PSDL_COLOR_DEPTH / 8)
+
+#ifndef PSDL_EVENT_QUEUE_LEN
+#define PSDL_EVENT_QUEUE_LEN 64
+#endif
+
+#ifndef PSDL_MAX_TIMERS
+#define PSDL_MAX_TIMERS 4
+#endif
+
+/* Audio staging: one callback's worth of signed 16-bit stereo frames. */
+#ifndef PSDL_AUDIO_BLOCK_FRAMES
+#define PSDL_AUDIO_BLOCK_FRAMES 256
+#endif
+
+/*
+ * Master volume at startup: a tenth of PSDL_VOLUME_UNITY.
+ *
+ * Not unity on purpose. A MAX98357A driving a small speaker is loud, and
+ * anything wrong in the mixer is loud *at full scale* - which is unpleasant and
+ * makes a fault hard to work on. A tenth is enough to hear what is happening
+ * without hurting; it was a quarter, which was not quiet enough in practice.
+ * Raise it with PSDL_SetMasterVolume() once the audio is behaving.
+ *
+ * Written as a fraction of unity rather than as 25 so it stays a tenth if
+ * PSDL_VOLUME_SHIFT ever changes. Integer division makes it 25/256, i.e. 9.8%.
+ */
+#ifndef PSDL_DEFAULT_VOLUME
+#define PSDL_DEFAULT_VOLUME (PSDL_VOLUME_UNITY / 10)
+#endif
+
+/* ---------------------------------------------------------------- panics */
+
+/* Nothing here allocates, so the failure mode for "ran out" is a bug, not a
+ * condition to recover from. Say so loudly rather than returning NULL into
+ * code that will not check it. */
+void psdl_panic(const char *fmt, ...) __attribute__((noreturn));
+
+#define PSDL_ASSERT(cond, msg) \
+	do { if (!(cond)) psdl_panic("picosdl: %s (%s:%d)", msg, __FILE__, __LINE__); } while (0)
+
+/* ---------------------------------------------------- module entry points */
+
+void         psdl_surface_init(void);
+SDL_Surface *psdl_surface_alloc_header(void);
+
+/* Wrap a framebuffer that lives in .bss and outlives everything - no pool slot, no
+ * arena, nothing to free. A backend uses it for buffers it owns itself. */
+SDL_Surface *psdl_surface_wrap_static(void *pixels, int w, int h, int pitch,
+                                      SDL_PixelFormat *format);
+void         psdl_surface_free_header(SDL_Surface *s);
+
+void         psdl_palette_init(void);
+void         psdl_video_init(void);
+void         psdl_events_init(void);
+void         psdl_timer_init(void);
+void         psdl_audio_init(void);
+
+/* The window's surface, or NULL if no window was created. Wraps client memory. */
+SDL_Surface *psdl_screen_surface(void);
+
+/* Called by input backends. The push_* functions queue an event; the
+ * joystick_set_* ones update the state SDL_JoystickGetAxis/Button reports. */
+void psdl_push_key(SDL_Scancode scancode, int pressed, Uint16 mod);
+void psdl_push_joy_axis(int axis, Sint16 value);
+void psdl_push_controller_axis(int axis, Sint16 value);
+void psdl_push_controller_button(int button, int pressed);
+void psdl_push_controller_device(int added);
+void psdl_push_joy_button(int button, int pressed);
+void psdl_push_quit(void);
+void psdl_joystick_set_axis(int axis, Sint16 value);
+
+/* Whether this build has an analog joystick at all. Together with the controller's
+ * presence it is what SDL_NumJoysticks() reports, which is how a client discovers
+ * there is nothing to read. */
+void psdl_joystick_set_present(int present);
+int  psdl_joystick_present(void);
+
+/* Game controller state, fed by whichever backend has one. Presence drives
+ * SDL_IsGameController(); the axis and button setters only emit an event when the
+ * value actually changes, so a backend may call them every poll. */
+void psdl_controller_set_present(int present);
+int  psdl_controller_present(void);
+void psdl_controller_set_axis(int axis, Sint16 value);
+void psdl_controller_set_button(int button, int pressed);
+void psdl_joystick_set_button(int button, int pressed);
+
+/* Called by the audio backend from whichever core runs the mixer: fills buf
+ * with `frames` stereo int16 frames by invoking the client's SDL callback.
+ * Writes silence if no callback is open or audio is paused. */
+void psdl_audio_render(Sint16 *buf, int frames);
+
+/* Handles the keyboard's volume/mute keys, standing in for the window manager
+ * that would take them on a desktop. Non-zero means the key was consumed and no
+ * event should be queued for it. */
+int  psdl_audio_volume_key(SDL_Scancode scancode, int pressed);
+
+/* ------------------------------------------------------ backend interface */
+
+/* Video. present() is asynchronous on hardware; sync() waits for the previous
+ * one to land. The split lets a caller overlap drawing with the panel push. */
+/* Console output that is safe from any core and from an interrupt. On hardware
+ * printf is not: the SDK serialises stdout with a mutex, which an exception
+ * handler cannot take. Backends that have no such problem may just print. */
+void psdl_backend_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+void psdl_backend_video_init(int w, int h);
+void psdl_backend_video_present(const Uint8 *pixels, int w, int h, int pitch);
+
+/*
+ * Push one rectangle of the canvas.
+ *
+ * `pixels` points at the canvas origin and `pitch` is its stride; (x, y, w, h) is
+ * the region within it to send. The full-frame present above is this with the
+ * whole canvas as the rectangle.
+ *
+ * Two callers want it. A client that knows what changed can push only that - the
+ * panel keeps everything it was last sent, so anything not pushed stays as it is.
+ * And for a client with one buffer, that retention is the second buffer: the
+ * screen the player is looking at lives in the panel, not in RAM.
+ */
+void psdl_backend_video_present_rect(const Uint8 *pixels, int pitch,
+                                     int x, int y, int w, int h);
+void psdl_backend_video_sync(void);
+
+/* Non-blocking: is the panel still reading `pixels`? A backend whose present is
+ * synchronous can always answer 0. */
+int  psdl_backend_video_buffer_busy(const void *pixels);
+void psdl_backend_palette_set(int first, int ncolors, const SDL_Color *colors);
+
+/*
+ * Drawing engine (PSDL_BACKEND_GPU): a backend with a GPU that reaches some of
+ * the memory draws the blits and fills whose pixels all lie there, and says so
+ * by returning 1; 0 leaves the operation to the CPU loops. The GPU runs behind
+ * the CPU, so before a CPU loop touches pixels picosdl calls
+ * psdl_backend_cpu_touch() with the source and destination pixels it is about
+ * to read or write (NULL: none): the backend waits there for the GPU when
+ * either may be GPU memory and GPU work is queued. Every result must be the
+ * CPU loop's, pixel for pixel.
+ *
+ *   gpu_nib   blit_nib()'s operation on a 4 bpp source (mode PSDL_NIB_*)
+ *   gpu_blit  an 8 bpp w x h copy from sp (the first pixel read, stepping
+ *             sdir = +1 or -1 along a row) to dp (mode PSDL_G_*; key: the
+ *             colour key of PSDL_G_KEYED)
+ *   gpu_fill  w x h of value v at dp
+ */
+enum { PSDL_NIB_COPY, PSDL_NIB_MONO, PSDL_NIB_XOR };
+enum { PSDL_G_COPY, PSDL_G_KEYED, PSDL_G_XOR };
+#ifdef PSDL_BACKEND_GPU
+int  psdl_backend_gpu_nib(const SDL_Surface *src, int sx, int sy, int dir, Uint8 *dp, int dpitch,
+                          int w, int h, int mode, int keyed, Uint8 color);
+int  psdl_backend_gpu_blit(const Uint8 *sp, int spitch, int sdir, Uint8 *dp, int dpitch,
+                           int w, int h, int mode, Uint8 key);
+int  psdl_backend_gpu_fill(Uint8 *dp, int dpitch, int w, int h, Uint8 v);
+void psdl_backend_cpu_touch(const void *src, const void *dst);
+#else
+static inline int  psdl_backend_gpu_nib(const SDL_Surface *src, int sx, int sy, int dir, Uint8 *dp,
+                                        int dpitch, int w, int h, int mode, int keyed, Uint8 color)
+{ (void)src; (void)sx; (void)sy; (void)dir; (void)dp; (void)dpitch; (void)w; (void)h;
+  (void)mode; (void)keyed; (void)color; return 0; }
+static inline int  psdl_backend_gpu_blit(const Uint8 *sp, int spitch, int sdir, Uint8 *dp, int dpitch,
+                                         int w, int h, int mode, Uint8 key)
+{ (void)sp; (void)spitch; (void)sdir; (void)dp; (void)dpitch; (void)w; (void)h; (void)mode;
+  (void)key; return 0; }
+static inline int  psdl_backend_gpu_fill(Uint8 *dp, int dpitch, int w, int h, Uint8 v)
+{ (void)dp; (void)dpitch; (void)w; (void)h; (void)v; return 0; }
+static inline void psdl_backend_cpu_touch(const void *src, const void *dst) { (void)src; (void)dst; }
+#endif
+
+/* Input. poll() is called from SDL_PumpEvents and should push whatever it has. */
+void psdl_backend_input_init(void);
+void psdl_backend_input_poll(void);
+
+/* Audio. The backend pulls via psdl_audio_render(). The lock is held across the
+ * client callback and is what SDL_LockAudio maps to, so it has to work across
+ * cores - the mixer runs on core 1. */
+void psdl_backend_audio_open(int freq, int channels, int block_frames);
+void psdl_backend_audio_close(void);
+void psdl_backend_audio_pause(int pause_on);
+void psdl_backend_audio_lock(void);
+void psdl_backend_audio_unlock(void);
+
+/* Time. */
+/*
+ * Percentage of a core spent working since the last call, or -1 if that core has
+ * never reported. See PSDL_CpuIdle() in SDL.h for how it is measured.
+ */
+int psdl_backend_cpu_load(int core);
+
+Uint32 psdl_backend_ticks_ms(void);
+Uint64 psdl_backend_ticks_us(void);
+void   psdl_backend_delay_ms(Uint32 ms);
+
+#endif /* PICOSDL_INTERNAL_H */

@@ -13,25 +13,29 @@
 // Module Description : AHB system for arvern containing:
 //
 //                             - AHB interconnect
-//                             - ROM
-//                             - SRAM X
+//                             - Program memory (executable)
 //
-//                             - SRAM NX
-//                             - Periph #0
-//                             - Periph #1
-//                             - Periph #2
+//                             - Data SRAM (non-executable)
+//                             - ACLINT
+//                             - Belenos register and VRAM-window ports (the
+//                               controller is in the top level)
+//                             - PLIC
+//                             - AHB-to-APB bridge (64KB at 0x10040000) with
+//                               the board I/O, GPIO (GPIO_1 header) and GPIO
+//                               (Arduino header) as APB4 completers
 //----------------------------------------------------------------------------
 
 module  ahb_bus_system #(
 
 // PARAMETERs
 //======================================
-parameter                ROM_SIZE     = 8*1024,   // Size of the ROM memory instance (in Bytes)
-parameter                SRAM_X_SIZE  = 8*1024,   // Size of the Executable SRAM memory instance (in Bytes)
+parameter                ROM_SIZE     = 8*1024,   // Size of the program memory instance (in Bytes)
 parameter                SRAM_NX_SIZE = 8*1024,   // Size of the Non-executable SRAM memory instance (in Bytes)
+parameter                VRAM_WORDS   = 38400,    // Belenos VRAM depth (32-bit words)
 parameter [0:0]          FIXED_B_PRIO = 1'b0,     // Arbitration scheme inside the fused ROM/SRAM controllers:
                                                   //   1'b0 = round-robin (toggle priority, default)
                                                   //   1'b1 = fixed Port-B priority (data bus wins)
+parameter                SU_MODE_EN   = 1,        // Core S-mode + U-mode present: S-mode interrupt sources in the ACLINT and PLIC
 parameter                ASYNC_RST_EN = 1'b1      // Reset architecture: 1=async active-low reset (default), 0=synchronous reset
 
 ) (
@@ -80,50 +84,8 @@ output wire              m_nx_hresp_o,
 output wire        [7:0] periph0_led_o,
 input  wire        [1:0] periph0_key_i,
 input  wire        [3:0] periph0_sw_i,
-output wire              periph0_irq_key_o,
-output wire              periph0_irq_sw_o,
 output wire       [31:0] periph0_tty_data_o,
 output wire       [31:0] periph0_key_sw_val_o,
-
-// AHB PERIPHERAL #1
-//========================================
-input  wire       [31:0] periph1_reg_08_i,
-input  wire       [31:0] periph1_reg_09_i,
-input  wire       [31:0] periph1_reg_10_i,
-input  wire       [31:0] periph1_reg_11_i,
-input  wire       [31:0] periph1_reg_12_i,
-input  wire       [31:0] periph1_reg_13_i,
-input  wire       [31:0] periph1_reg_14_i,
-input  wire       [31:0] periph1_reg_15_i,
-
-output wire       [31:0] periph1_reg_00_o,
-output wire       [31:0] periph1_reg_01_o,
-output wire       [31:0] periph1_reg_02_o,
-output wire       [31:0] periph1_reg_03_o,
-output wire       [31:0] periph1_reg_04_o,
-output wire       [31:0] periph1_reg_05_o,
-output wire       [31:0] periph1_reg_06_o,
-output wire       [31:0] periph1_reg_07_o,
-
-// AHB PERIPHERAL #2
-//========================================
-input  wire       [31:0] periph2_reg_08_i,
-input  wire       [31:0] periph2_reg_09_i,
-input  wire       [31:0] periph2_reg_10_i,
-input  wire       [31:0] periph2_reg_11_i,
-input  wire       [31:0] periph2_reg_12_i,
-input  wire       [31:0] periph2_reg_13_i,
-input  wire       [31:0] periph2_reg_14_i,
-input  wire       [31:0] periph2_reg_15_i,
-
-output wire       [31:0] periph2_reg_00_o,
-output wire       [31:0] periph2_reg_01_o,
-output wire       [31:0] periph2_reg_02_o,
-output wire       [31:0] periph2_reg_03_o,
-output wire       [31:0] periph2_reg_04_o,
-output wire       [31:0] periph2_reg_05_o,
-output wire       [31:0] periph2_reg_06_o,
-output wire       [31:0] periph2_reg_07_o,
 
 // ACLINT CLOCK & RESET
 //========================================
@@ -139,7 +101,56 @@ output wire              aclint_irq_m_timer_o,    // MTIP -> core irq_m_timer_i
 
 input  wire              aclint_time_req_i,       // core time_req_o
 output wire              aclint_time_gnt_o,       // -> core time_gnt_i
-output wire       [63:0] aclint_time_val_o        // -> core time_val_i
+output wire       [63:0] aclint_time_val_o,       // -> core time_val_i
+
+// BELENOS GRAPHIC CONTROLLER (in the top level): register port
+//========================================
+output wire              blnsr_hsel_o,            // select
+output wire       [31:0] blnsr_haddr_o,           // address
+output wire        [1:0] blnsr_htrans_o,          // transfer type
+output wire              blnsr_hwrite_o,          // write
+output wire        [2:0] blnsr_hsize_o,           // size
+output wire        [3:0] blnsr_hprot_o,           // protection
+output wire              blnsr_hsmode_o,          // S-mode access
+output wire              blnsr_hready_o,          // bus ready
+output wire       [31:0] blnsr_hwdata_o,          // write data
+input  wire       [31:0] blnsr_hrdata_i,          // read data
+input  wire              blnsr_hreadyout_i,       // slave ready
+input  wire              blnsr_hresp_i,           // slave error
+
+// BELENOS GRAPHIC CONTROLLER (in the top level): VRAM-window port
+//========================================
+output wire              blnsv_hsel_o,            // select
+output wire       [31:0] blnsv_haddr_o,           // address
+output wire        [1:0] blnsv_htrans_o,          // transfer type
+output wire              blnsv_hwrite_o,          // write
+output wire        [2:0] blnsv_hsize_o,           // size
+output wire        [3:0] blnsv_hprot_o,           // protection
+output wire              blnsv_hsmode_o,          // S-mode access
+output wire              blnsv_hready_o,          // bus ready
+output wire       [31:0] blnsv_hwdata_o,          // write data
+input  wire       [31:0] blnsv_hrdata_i,          // read data
+input  wire              blnsv_hreadyout_i,       // slave ready
+input  wire              blnsv_hresp_i,           // slave error
+
+input  wire              blns_hclk_en_i,          // Belenos clock-gate enable (into hclk_en_o)
+
+// PLIC
+//========================================
+output wire              plic_irq_m_external_o,   // -> core irq_m_external_i
+output wire              plic_irq_s_external_o,   // -> core irq_s_external_i
+
+// GPIO
+//========================================
+input  wire       [25:0] gpio_i,                  // pin values (asynchronous)
+output wire       [25:0] gpio_o,                  // pin output values
+output wire       [25:0] gpio_oe_o,               // pin output enables, 1 = drive
+
+// GPIO (Arduino header)
+//========================================
+input  wire       [15:0] gpio_ard_i,              // pin values (asynchronous)
+output wire       [15:0] gpio_ard_o,              // pin output values
+output wire       [15:0] gpio_ard_oe_o            // pin output enables, 1 = drive
 
 );
 
@@ -149,13 +160,14 @@ output wire       [63:0] aclint_time_val_o        // -> core time_val_i
 //=============================================================================
 
 // Local parameters
-localparam               ROM_ADDRW      = $clog2(ROM_SIZE)-2;     // Address width of the ROM memory instance (32b words)
-localparam               SRAM_X_ADDRW   = $clog2(SRAM_X_SIZE)-2;  // Address width of the Executable SRAM memory instance (32b words)
+localparam               ROM_ADDRW      = $clog2(ROM_SIZE)-2;     // Address width of the program memory instance (32b words)
 
 localparam               SRAM_NX_ADDRW  = $clog2(SRAM_NX_SIZE)-2; // Address width of the Non-executable SRAM memory instance (32b words)
 localparam               SRAM_NX_HADDRW = $clog2(SRAM_NX_SIZE);   // Address width of the Non-executable SRAM AHB interface (8b words)
 
 localparam               HAUSER_W       = 1;                      // Width of the HAUSER bus (min value is 1)
+
+localparam               VRAM_SIZE      = VRAM_WORDS*4;           // Belenos VRAM window size (in Bytes)
 
 // Arbiter Interface
 wire                     m_nx_grant;
@@ -168,9 +180,8 @@ wire               [6:0] s_decoder_1hot;
 wire              [31:0] s_decoder_addr;
 
 // AHB Subordinate Interfaces
-//   Note: s_rom_* and s_sram_x_* AHB subordinate interfaces are no longer
-//   needed -- the fused interconnect absorbs the ROM and SRAM_X controllers
-//   and drives the memory macros directly through the rom_*/sram_* ports.
+//   The program memory has no AHB subordinate interface: its controller is
+//   fused inside the interconnect, which drives the macro through sram_*.
 wire              [31:0] s_sram_nx_hrdata;
 wire                     s_sram_nx_hreadyout;
 wire                     s_sram_nx_hresp;
@@ -187,53 +198,21 @@ wire               [1:0] s_sram_nx_htrans;
 wire              [31:0] s_sram_nx_hwdata;
 wire                     s_sram_nx_hwrite;
 
-wire              [31:0] s_periph0_hrdata;
-wire                     s_periph0_hreadyout;
-wire                     s_periph0_hresp;
-wire                     s_periph0_hsel;
-wire              [31:0] s_periph0_haddr;
-wire      [HAUSER_W-1:0] s_periph0_hauser;
-wire               [2:0] s_periph0_hburst;
-wire               [3:0] s_periph0_hmaster;
-wire                     s_periph0_hmastlock;
-wire               [3:0] s_periph0_hprot;
-wire                     s_periph0_hready;
-wire               [2:0] s_periph0_hsize;
-wire               [1:0] s_periph0_htrans;
-wire              [31:0] s_periph0_hwdata;
-wire                     s_periph0_hwrite;
-
-wire              [31:0] s_periph1_hrdata;
-wire                     s_periph1_hreadyout;
-wire                     s_periph1_hresp;
-wire                     s_periph1_hsel;
-wire              [31:0] s_periph1_haddr;
-wire      [HAUSER_W-1:0] s_periph1_hauser;
-wire               [2:0] s_periph1_hburst;
-wire               [3:0] s_periph1_hmaster;
-wire                     s_periph1_hmastlock;
-wire               [3:0] s_periph1_hprot;
-wire                     s_periph1_hready;
-wire               [2:0] s_periph1_hsize;
-wire               [1:0] s_periph1_htrans;
-wire              [31:0] s_periph1_hwdata;
-wire                     s_periph1_hwrite;
-
-wire              [31:0] s_periph2_hrdata;
-wire                     s_periph2_hreadyout;
-wire                     s_periph2_hresp;
-wire                     s_periph2_hsel;
-wire              [31:0] s_periph2_haddr;
-wire      [HAUSER_W-1:0] s_periph2_hauser;
-wire               [2:0] s_periph2_hburst;
-wire               [3:0] s_periph2_hmaster;
-wire                     s_periph2_hmastlock;
-wire               [3:0] s_periph2_hprot;
-wire                     s_periph2_hready;
-wire               [2:0] s_periph2_hsize;
-wire               [1:0] s_periph2_htrans;
-wire              [31:0] s_periph2_hwdata;
-wire                     s_periph2_hwrite;
+wire              [31:0] s_apb_hrdata;
+wire                     s_apb_hreadyout;
+wire                     s_apb_hresp;
+wire                     s_apb_hsel;
+wire              [31:0] s_apb_haddr;
+wire      [HAUSER_W-1:0] s_apb_hauser;
+wire               [2:0] s_apb_hburst;
+wire               [3:0] s_apb_hmaster;
+wire                     s_apb_hmastlock;
+wire               [3:0] s_apb_hprot;
+wire                     s_apb_hready;
+wire               [2:0] s_apb_hsize;
+wire               [1:0] s_apb_htrans;
+wire              [31:0] s_apb_hwdata;
+wire                     s_apb_hwrite;
 
 wire              [31:0] s_aclint_hrdata;
 wire                     s_aclint_hreadyout;
@@ -250,6 +229,56 @@ wire               [2:0] s_aclint_hsize;
 wire               [1:0] s_aclint_htrans;
 wire              [31:0] s_aclint_hwdata;
 wire                     s_aclint_hwrite;
+
+wire              [31:0] s_blnsr_hrdata;
+wire                     s_blnsr_hreadyout;
+wire                     s_blnsr_hresp;
+wire                     s_blnsr_hsel;
+wire              [31:0] s_blnsr_haddr;
+wire      [HAUSER_W-1:0] s_blnsr_hauser;
+wire               [2:0] s_blnsr_hburst;
+wire               [3:0] s_blnsr_hmaster;
+wire                     s_blnsr_hmastlock;
+wire               [3:0] s_blnsr_hprot;
+wire                     s_blnsr_hready;
+wire               [2:0] s_blnsr_hsize;
+wire               [1:0] s_blnsr_htrans;
+wire              [31:0] s_blnsr_hwdata;
+wire                     s_blnsr_hwrite;
+
+wire              [31:0] s_blnsv_hrdata;
+wire                     s_blnsv_hreadyout;
+wire                     s_blnsv_hresp;
+wire                     s_blnsv_hsel;
+wire              [31:0] s_blnsv_haddr;
+wire      [HAUSER_W-1:0] s_blnsv_hauser;
+wire               [2:0] s_blnsv_hburst;
+wire               [3:0] s_blnsv_hmaster;
+wire                     s_blnsv_hmastlock;
+wire               [3:0] s_blnsv_hprot;
+wire                     s_blnsv_hready;
+wire               [2:0] s_blnsv_hsize;
+wire               [1:0] s_blnsv_htrans;
+wire              [31:0] s_blnsv_hwdata;
+wire                     s_blnsv_hwrite;
+
+wire              [31:0] s_plic_hrdata;
+wire                     s_plic_hreadyout;
+wire                     s_plic_hresp;
+wire                     s_plic_hsel;
+wire              [31:0] s_plic_haddr;
+wire      [HAUSER_W-1:0] s_plic_hauser;
+wire               [2:0] s_plic_hburst;
+wire               [3:0] s_plic_hmaster;
+wire                     s_plic_hmastlock;
+wire               [3:0] s_plic_hprot;
+wire                     s_plic_hready;
+wire               [2:0] s_plic_hsize;
+wire               [1:0] s_plic_htrans;
+wire              [31:0] s_plic_hwdata;
+wire                     s_plic_hwrite;
+
+
 
 // Program-memory Interface (executable slot 0 @ 0x20000000 - writable
 // init-at-config SRAM so a debugger can load firmware here over SBA).
@@ -270,16 +299,6 @@ wire                     rom_cen_o_unused;
 wire                     rom_clk_o_unused;
 wire                     rom_ports_unused_ok = |{1'b0, rom_addr_o_unused, rom_cen_o_unused, rom_clk_o_unused, 1'b0};
 
-// Executable SRAM Interface (slot 1 @ 0x80000000)
-//   Same 30-bit-address slicing as the program memory.
-wire              [31:0] sram_x_dout;
-wire              [29:0] sram_x_addr_full;
-wire  [SRAM_X_ADDRW-1:0] sram_x_addr;
-wire                     sram_x_cen;
-wire                     sram_x_clk;
-wire              [31:0] sram_x_din;
-wire               [3:0] sram_x_wen;
-
 // Non-executable SRAM Interface
 wire              [31:0] sram_nx_dout;
 wire [SRAM_NX_ADDRW-1:0] sram_nx_addr;
@@ -289,29 +308,45 @@ wire              [31:0] sram_nx_din;
 wire               [3:0] sram_nx_wen;
 
 // Architectural clock-gating
-//   The fused interconnect's hclk_en covers ROM + SRAM_X activity, so the
-//   per-controller s_rom_hclk_en / s_sram_x_hclk_en signals are gone.
+//   The fused interconnect's hclk_en covers the program-memory activity.
 wire                     interconnect_hclk_en;
 wire                     s_sram_nx_hclk_en;
-wire                     s_periph0_hclk_en;
-wire                     s_periph1_hclk_en;
-wire                     s_periph2_hclk_en;
+wire                     s_apb_hclk_en;
+wire                     apb_lks_pclk_en;
+wire                     apb_gpio_pclk_en;
+wire                     apb_gpio_ard_pclk_en;
 wire                     s_aclint_hclk_en;
+wire                     s_blns_hclk_en;
+wire                     s_plic_hclk_en;
 
 wire                     aclint_mtimer_wake_lf;
+
+// PLIC interrupt sources: [1..26] GPIO pins 0..25, [27] KEY, [28] SW,
+// [32..47] Arduino GPIO pins 0..15
+wire                     periph0_irq_key;
+wire                     periph0_irq_sw;
+wire              [25:0] gpio_irq;
+wire                     gpio_irq_any;
+wire              [15:0] gpio_ard_irq;
+wire                     gpio_ard_irq_any;
+wire              [47:0] plic_irq_src;
+
+// GPIO alternate-function ownership outputs (ALT_NR=0: always 0)
+wire           [4*26-1:0] gpio_alt_act_unused;
+wire           [4*16-1:0] gpio_ard_alt_act_unused;
 
 //=============================================================================
 // 2)  FUSED AHB INTERCONNECT
 //=============================================================================
 //
-// The fused interconnect absorbs the ahb_rom_controller and the executable
-// ahb_sram_controller used by the legacy hiperf flow.  The ROM and SRAM_X
-// memory macros are wired directly to it through the rom_*/sram_* ports.
+// The fused interconnect absorbs the program-memory controller; its macro is
+// wired directly to it through the sram_* ports. Everything else, including
+// the data SRAM, sits in the non-executable space.
 //
 ahb_interconnect_fused #(.NR_M             (1),                 // Number of non-executable AHB Managers
                          .NR_S_X_ROM       (0),                 // No ROM controllers (ROM-less executable space)
-                         .NR_S_X_SRAM      (2),                 // Two fused SRAM controllers: pmem @0x20000000 + SRAM_X @0x80000000
-                         .NR_S_NX          (5),                 // Number of AHB Subordinates in non-executable space (SRAM-NX + 3 periph + ACLINT)
+                         .NR_S_X_SRAM      (1),                 // One fused SRAM controller: pmem @0x20000000
+                         .NR_S_NX          (6),                 // Number of AHB Subordinates in non-executable space (SRAM-NX + APB bridge + ACLINT + Belenos regs/VRAM + PLIC)
                          .M_NX_HMASTER_TAG (4'h8),              // Data port tag (data_hmaster_o) on HMASTER[3]
                          .HAUSER_W         (HAUSER_W),          // Width of the HAUSER bus (min value is 1)
                          .FIXED_B_PRIO     (FIXED_B_PRIO),      // Arbitration scheme: 0=round-robin, 1=fixed Port-B priority
@@ -362,7 +397,7 @@ ahb_interconnect_fused #(.NR_M             (1),                 // Number of non
     .s_decoder_addr_o      ( s_decoder_addr                            ),
 
 // ADDRESS DECODER INTERFACES (FOR EXECUTABLE SUBORDINATES ONLY)
-    .s_x_decoder_1hot_i    ( s_x_decoder_1hot[1:0]                     ),
+    .s_x_decoder_1hot_i    ( s_x_decoder_1hot[0]                       ),
     .s_x_decoder_addr_o    ( s_x_decoder_addr                          ),
 
 // FUSED ROM CONTROLLER MEMORY INTERFACE  (NR_S_X_ROM=0 -> none; rom_dout_i is the
@@ -372,37 +407,35 @@ ahb_interconnect_fused #(.NR_M             (1),                 // Number of non
     .rom_cen_o             ( rom_cen_o_unused                          ),
     .rom_clk_o             ( rom_clk_o_unused                          ),
 
-// FUSED SRAM CONTROLLER MEMORY INTERFACE (2 slots; j=0 low bits = pmem @0x20000000,
-//   j=1 high bits = SRAM_X @0x80000000 -- matches decoder bits [0],[1] respectively)
-    .sram_dout_i           ( {sram_x_dout,      pmem_dout}             ),
-    .sram_addr_o           ( {sram_x_addr_full, pmem_addr_full}        ),
-    .sram_cen_o            ( {sram_x_cen,       pmem_cen}              ),
-    .sram_clk_o            ( {sram_x_clk,       pmem_clk}              ),
-    .sram_din_o            ( {sram_x_din,       pmem_din}              ),
-    .sram_wen_o            ( {sram_x_wen,       pmem_wen}              ),
+// FUSED SRAM CONTROLLER MEMORY INTERFACE (one slot: pmem @0x20000000, decoder bit [0])
+    .sram_dout_i           ( pmem_dout                                 ),
+    .sram_addr_o           ( pmem_addr_full                            ),
+    .sram_cen_o            ( pmem_cen                                  ),
+    .sram_clk_o            ( pmem_clk                                  ),
+    .sram_din_o            ( pmem_din                                  ),
+    .sram_wen_o            ( pmem_wen                                  ),
 
 // NON-EXECUTABLE AHB SUBORDINATE INTERFACES
-    .s_nx_hrdata_i         ({s_aclint_hrdata,    s_periph2_hrdata,    s_periph1_hrdata,    s_periph0_hrdata,    s_sram_nx_hrdata    }),
-    .s_nx_hreadyout_i      ({s_aclint_hreadyout, s_periph2_hreadyout, s_periph1_hreadyout, s_periph0_hreadyout, s_sram_nx_hreadyout }),
-    .s_nx_hresp_i          ({s_aclint_hresp,     s_periph2_hresp,     s_periph1_hresp,     s_periph0_hresp,     s_sram_nx_hresp     }),
-    .s_nx_haddr_o          ({s_aclint_haddr,     s_periph2_haddr,     s_periph1_haddr,     s_periph0_haddr,     s_sram_nx_haddr     }),
-    .s_nx_hauser_o         ({s_aclint_hauser,    s_periph2_hauser,    s_periph1_hauser,    s_periph0_hauser,    s_sram_nx_hauser    }),
-    .s_nx_hburst_o         ({s_aclint_hburst,    s_periph2_hburst,    s_periph1_hburst,    s_periph0_hburst,    s_sram_nx_hburst    }),
-    .s_nx_hmaster_o        ({s_aclint_hmaster,   s_periph2_hmaster,   s_periph1_hmaster,   s_periph0_hmaster,   s_sram_nx_hmaster   }),
-    .s_nx_hmastlock_o      ({s_aclint_hmastlock, s_periph2_hmastlock, s_periph1_hmastlock, s_periph0_hmastlock, s_sram_nx_hmastlock }),
-    .s_nx_hprot_o          ({s_aclint_hprot,     s_periph2_hprot,     s_periph1_hprot,     s_periph0_hprot,     s_sram_nx_hprot     }),
-    .s_nx_hready_o         ({s_aclint_hready,    s_periph2_hready,    s_periph1_hready,    s_periph0_hready,    s_sram_nx_hready    }),
-    .s_nx_hsel_o           ({s_aclint_hsel,      s_periph2_hsel,      s_periph1_hsel,      s_periph0_hsel,      s_sram_nx_hsel      }),
-    .s_nx_hsize_o          ({s_aclint_hsize,     s_periph2_hsize,     s_periph1_hsize,     s_periph0_hsize,     s_sram_nx_hsize     }),
-    .s_nx_htrans_o         ({s_aclint_htrans,    s_periph2_htrans,    s_periph1_htrans,    s_periph0_htrans,    s_sram_nx_htrans    }),
-    .s_nx_hwdata_o         ({s_aclint_hwdata,    s_periph2_hwdata,    s_periph1_hwdata,    s_periph0_hwdata,    s_sram_nx_hwdata    }),
-    .s_nx_hwrite_o         ({s_aclint_hwrite,    s_periph2_hwrite,    s_periph1_hwrite,    s_periph0_hwrite,    s_sram_nx_hwrite    })
+    .s_nx_hrdata_i         ({s_plic_hrdata,     s_blnsv_hrdata,    s_blnsr_hrdata,    s_aclint_hrdata,    s_apb_hrdata,    s_sram_nx_hrdata    }),
+    .s_nx_hreadyout_i      ({s_plic_hreadyout,  s_blnsv_hreadyout, s_blnsr_hreadyout, s_aclint_hreadyout, s_apb_hreadyout, s_sram_nx_hreadyout }),
+    .s_nx_hresp_i          ({s_plic_hresp,      s_blnsv_hresp,     s_blnsr_hresp,     s_aclint_hresp,     s_apb_hresp,     s_sram_nx_hresp     }),
+    .s_nx_haddr_o          ({s_plic_haddr,      s_blnsv_haddr,     s_blnsr_haddr,     s_aclint_haddr,     s_apb_haddr,     s_sram_nx_haddr     }),
+    .s_nx_hauser_o         ({s_plic_hauser,     s_blnsv_hauser,    s_blnsr_hauser,    s_aclint_hauser,    s_apb_hauser,    s_sram_nx_hauser    }),
+    .s_nx_hburst_o         ({s_plic_hburst,     s_blnsv_hburst,    s_blnsr_hburst,    s_aclint_hburst,    s_apb_hburst,    s_sram_nx_hburst    }),
+    .s_nx_hmaster_o        ({s_plic_hmaster,    s_blnsv_hmaster,   s_blnsr_hmaster,   s_aclint_hmaster,   s_apb_hmaster,   s_sram_nx_hmaster   }),
+    .s_nx_hmastlock_o      ({s_plic_hmastlock,  s_blnsv_hmastlock, s_blnsr_hmastlock, s_aclint_hmastlock, s_apb_hmastlock, s_sram_nx_hmastlock }),
+    .s_nx_hprot_o          ({s_plic_hprot,      s_blnsv_hprot,     s_blnsr_hprot,     s_aclint_hprot,     s_apb_hprot,     s_sram_nx_hprot     }),
+    .s_nx_hready_o         ({s_plic_hready,     s_blnsv_hready,    s_blnsr_hready,    s_aclint_hready,    s_apb_hready,    s_sram_nx_hready    }),
+    .s_nx_hsel_o           ({s_plic_hsel,       s_blnsv_hsel,      s_blnsr_hsel,      s_aclint_hsel,      s_apb_hsel,      s_sram_nx_hsel      }),
+    .s_nx_hsize_o          ({s_plic_hsize,      s_blnsv_hsize,     s_blnsr_hsize,     s_aclint_hsize,     s_apb_hsize,     s_sram_nx_hsize     }),
+    .s_nx_htrans_o         ({s_plic_htrans,     s_blnsv_htrans,    s_blnsr_htrans,    s_aclint_htrans,    s_apb_htrans,    s_sram_nx_htrans    }),
+    .s_nx_hwdata_o         ({s_plic_hwdata,     s_blnsv_hwdata,    s_blnsr_hwdata,    s_aclint_hwdata,    s_apb_hwdata,    s_sram_nx_hwdata    }),
+    .s_nx_hwrite_o         ({s_plic_hwrite,     s_blnsv_hwrite,    s_blnsr_hwrite,    s_aclint_hwrite,    s_apb_hwrite,    s_sram_nx_hwrite    })
 );
 
-// Slice the fused fabric's 30-bit word address down to each macro's
+// Slice the fused fabric's 30-bit word address down to the macro's
 // physical address width.
 assign pmem_addr   = pmem_addr_full  [ROM_ADDRW-1:0];
-assign sram_x_addr = sram_x_addr_full[SRAM_X_ADDRW-1:0];
 
 
 //=============================================================================
@@ -412,12 +445,12 @@ assign sram_x_addr = sram_x_addr_full[SRAM_X_ADDRW-1:0];
 // No arbitration, only one NX master
 assign m_nx_grant = m_nx_request;
 
-ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE)) ahb_decoder_x_inst (
+ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE), .VRAM_SIZE(VRAM_SIZE)) ahb_decoder_x_inst (
     .decoder_addr_i        ( s_x_decoder_addr                          ),
     .decoder_1hot_o        ( s_x_decoder_1hot                          )
 );
 
-ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE)) ahb_decoder_inst   (
+ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_NX_SIZE(SRAM_NX_SIZE), .VRAM_SIZE(VRAM_SIZE)) ahb_decoder_inst   (
 
     .decoder_addr_i        ( s_decoder_addr                            ),
     .decoder_1hot_o        ( s_decoder_1hot                            )
@@ -432,7 +465,7 @@ ahb_decoder #(.ROM_SIZE(ROM_SIZE), .SRAM_X_SIZE(SRAM_X_SIZE), .SRAM_NX_SIZE(SRAM
 //   image. The AHB-side controller is fused inside ahb_interconnect_fused; only
 //   the physical macro lives here.
 
-pmem_32kb #(.MEM_ADDRW(ROM_ADDRW), .ASYNC_RST_EN(ASYNC_RST_EN)) pmem_inst0 (
+pmem_48kb #(.MEM_ADDRW(ROM_ADDRW), .ASYNC_RST_EN(ASYNC_RST_EN)) pmem_inst0 (
 
 // OUTPUTs
     .pmem_dout_o           ( pmem_dout                                 ),
@@ -448,30 +481,12 @@ pmem_32kb #(.MEM_ADDRW(ROM_ADDRW), .ASYNC_RST_EN(ASYNC_RST_EN)) pmem_inst0 (
 
 
 //=============================================================================
-// 5) EXECUTABLE SRAM MEMORY
-//=============================================================================
-//   The AHB-side SRAM controller is fused inside ahb_interconnect_fused;
-//   only the physical SRAM macro lives here.
-
-sram_32kb #(.MEM_ADDRW(SRAM_X_ADDRW), .ASYNC_RST_EN(ASYNC_RST_EN)) sram_x_inst (
-
-// OUTPUTs
-    .sram_dout_o           ( sram_x_dout                               ),
-
-// INPUTs
-    .sram_addr_i           ( sram_x_addr                               ),
-    .sram_cen_i            ( sram_x_cen                                ),
-    .sram_clk_i            ( sram_x_clk                                ),
-    .sram_rst_i            ( hresetn_i                                 ),
-    .sram_din_i            ( sram_x_din                                ),
-    .sram_wen_i            ( sram_x_wen                                )
-);
-
-//=============================================================================
-// 6) NON-EXECUTABLE SRAM MEMORY
+// 5) DATA SRAM (non-executable @ 0x80000000)
 //=============================================================================
 
-ahb_sram_controller #(.MEM_SIZE(SRAM_NX_SIZE), .ASYNC_RST_EN(ASYNC_RST_EN)) ahb_sram_nx_ctrl_inst (
+// The controller takes a power-of-two size: the address width of SRAM_NX_SIZE rounded up
+// (the decoder bounds the region at SRAM_NX_SIZE, the addresses above it never come)
+ahb_sram_controller #(.MEM_SIZE(1 << $clog2(SRAM_NX_SIZE)), .ASYNC_RST_EN(ASYNC_RST_EN)) ahb_sram_nx_ctrl_inst (
 
 // AHB CLOCK & RESET
     .hclk_i                ( hclk_i                                    ),
@@ -499,7 +514,7 @@ ahb_sram_controller #(.MEM_SIZE(SRAM_NX_SIZE), .ASYNC_RST_EN(ASYNC_RST_EN)) ahb_
     .sram_wen_o            ( sram_nx_wen                               )
  );
 
-sram_32kb #(.MEM_ADDRW(SRAM_NX_ADDRW), .ASYNC_RST_EN(ASYNC_RST_EN)) sram_nx_inst (
+sram_48kb #(.MEM_ADDRW(SRAM_NX_ADDRW), .MEM_BANKS(SRAM_NX_SIZE / 8192), .ASYNC_RST_EN(ASYNC_RST_EN)) sram_nx_inst (
 
 // OUTPUTs
     .sram_dout_o           ( sram_nx_dout                              ),
@@ -515,29 +530,96 @@ sram_32kb #(.MEM_ADDRW(SRAM_NX_ADDRW), .ASYNC_RST_EN(ASYNC_RST_EN)) sram_nx_inst
 
 
 //=============================================================================
-// 7) AHB PERIPHERAL #0
+// 6) AHB-TO-APB BRIDGE
 //=============================================================================
+//
+//   64KB at 0x10040000 (decoder bit 2). Three APB4 completers, 4KB each:
+//     0x10040000  board I/O                  (psel[0])
+//     0x10041000  GPIO (GPIO_1 header)       (psel[1])
+//     0x10042000  GPIO (Arduino header)      (psel[2])
+//   The rest of the window answers with the AHB ERROR response. PCLK = HCLK.
+//
+localparam               APB_NR         = 3;
 
-ahb_led_key_sw #(.ASYNC_RST_EN(ASYNC_RST_EN)) ahb_led_key_sw_inst (
+wire        [APB_NR-1:0] apb_psel;
+wire              [15:0] apb_paddr;
+wire                     apb_penable;
+wire                     apb_pwrite;
+wire              [31:0] apb_pwdata;
+wire               [3:0] apb_pstrb;
+wire               [2:0] apb_pprot;
+wire                     apb_psmode;
+wire               [3:0] apb_pmaster;
+wire     [APB_NR*32-1:0] apb_prdata;
+wire        [APB_NR-1:0] apb_pready;
+wire        [APB_NR-1:0] apb_pslverr;
+
+ahb_apb_bridge #(.SLV_NR       (APB_NR),
+                 .ADDRW        (16),
+                 .SLV_BASE     ({16'h2000, 16'h1000, 16'h0000}),
+                 .SLV_AW       ({5'd12,    5'd12,    5'd12   }),
+                 .ASYNC_RST_EN (ASYNC_RST_EN)) ahb_apb_bridge_inst (
 
 // AHB CLOCK & RESET
     .hclk_i                ( hclk_i                                    ),
     .hresetn_i             ( hresetn_i                                 ),
-    .hclk_en_o             ( s_periph0_hclk_en                         ),
+    .hclk_en_o             ( s_apb_hclk_en                             ),
 
 // AHB INTERFACE
-    .haddr_i               ( s_periph0_haddr[6:0]                      ),
-    .hprot_i               ( s_periph0_hprot                           ),
-    .hready_i              ( s_periph0_hready                          ),
-    .hsize_i               ( s_periph0_hsize                           ),
-    .hsmode_i              ( s_periph0_hauser[0]                       ),
-    .htrans_i              ( s_periph0_htrans                          ),
-    .hwdata_i              ( s_periph0_hwdata                          ),
-    .hwrite_i              ( s_periph0_hwrite                          ),
-    .hsel_i                ( s_periph0_hsel                            ),
-    .hrdata_o              ( s_periph0_hrdata                          ),
-    .hreadyout_o           ( s_periph0_hreadyout                       ),
-    .hresp_o               ( s_periph0_hresp                           ),
+    .haddr_i               ( s_apb_haddr[15:0]                         ),
+    .hmaster_i             ( s_apb_hmaster                             ),
+    .hprot_i               ( s_apb_hprot                               ),
+    .hready_i              ( s_apb_hready                              ),
+    .hsize_i               ( s_apb_hsize                               ),
+    .hsmode_i              ( s_apb_hauser[0]                           ),
+    .htrans_i              ( s_apb_htrans                              ),
+    .hwdata_i              ( s_apb_hwdata                              ),
+    .hwrite_i              ( s_apb_hwrite                              ),
+    .hsel_i                ( s_apb_hsel                                ),
+    .hrdata_o              ( s_apb_hrdata                              ),
+    .hreadyout_o           ( s_apb_hreadyout                           ),
+    .hresp_o               ( s_apb_hresp                               ),
+
+// APB4 REQUESTER
+    .psel_o                ( apb_psel                                  ),
+    .paddr_o               ( apb_paddr                                 ),
+    .penable_o             ( apb_penable                               ),
+    .pwrite_o              ( apb_pwrite                                ),
+    .pwdata_o              ( apb_pwdata                                ),
+    .pstrb_o               ( apb_pstrb                                 ),
+    .pprot_o               ( apb_pprot                                 ),
+    .psmode_o              ( apb_psmode                                ),
+    .pmaster_o             ( apb_pmaster                               ),
+    .prdata_i              ( apb_prdata                                ),
+    .pready_i              ( apb_pready                                ),
+    .pslverr_i             ( apb_pslverr                               )
+);
+
+// Every completer decodes the low 7 bits of its 4KB window (the register
+// window repeats across it)
+wire               [8:0] apb_paddr_15_7_unused       = apb_paddr[15:7];
+
+
+// Board I/O: APB completer 0
+apb_led_key_sw #(.ASYNC_RST_EN(ASYNC_RST_EN)) apb_led_key_sw_inst (
+
+// APB CLOCK & RESET
+    .pclk_i                ( hclk_i                                    ),
+    .presetn_i             ( hresetn_i                                 ),
+    .pclk_en_o             ( apb_lks_pclk_en                           ),
+
+// APB INTERFACE
+    .psel_i                ( apb_psel[0]                               ),
+    .penable_i             ( apb_penable                               ),
+    .paddr_i               ( apb_paddr[6:0]                            ),
+    .pwrite_i              ( apb_pwrite                                ),
+    .pwdata_i              ( apb_pwdata                                ),
+    .pstrb_i               ( apb_pstrb                                 ),
+    .pprot_i               ( apb_pprot                                 ),
+    .psmode_i              ( apb_psmode                                ),
+    .prdata_o              ( apb_prdata[31:0]                          ),
+    .pready_o              ( apb_pready[0]                             ),
+    .pslverr_o             ( apb_pslverr[0]                            ),
 
 // BOARD I/O
     .led_o                 ( periph0_led_o                             ),
@@ -549,110 +631,20 @@ ahb_led_key_sw #(.ASYNC_RST_EN(ASYNC_RST_EN)) ahb_led_key_sw_inst (
     .key_sw_val_o          ( periph0_key_sw_val_o                      ),
 
 // INTERRUPT OUTPUTS
-    .irq_key_o             ( periph0_irq_key_o                         ),
-    .irq_sw_o              ( periph0_irq_sw_o                          )
+    .irq_key_o             ( periph0_irq_key                           ),
+    .irq_sw_o              ( periph0_irq_sw                            )
  );
 
 //=============================================================================
-// 8) AHB PERIPHERAL #1
-//=============================================================================
-
-ahb_periph_example #(.ASYNC_RST_EN(ASYNC_RST_EN)) ahb_periph_example_inst1 (
-
-// AHB CLOCK & RESET
-    .hclk_i                ( hclk_i                                    ),
-    .hresetn_i             ( hresetn_i                                 ),
-    .hclk_en_o             ( s_periph1_hclk_en                         ),
-
-// AHB INTERFACE
-    .haddr_i               ( s_periph1_haddr[6:0]                      ),
-    .hprot_i               ( s_periph1_hprot                           ),
-    .hready_i              ( s_periph1_hready                          ),
-    .hsize_i               ( s_periph1_hsize                           ),
-    .hsmode_i              ( s_periph1_hauser[0]                       ),
-    .htrans_i              ( s_periph1_htrans                          ),
-    .hwdata_i              ( s_periph1_hwdata                          ),
-    .hwrite_i              ( s_periph1_hwrite                          ),
-    .hsel_i                ( s_periph1_hsel                            ),
-    .hrdata_o              ( s_periph1_hrdata                          ),
-    .hreadyout_o           ( s_periph1_hreadyout                       ),
-    .hresp_o               ( s_periph1_hresp                           ),
-
-// REGISTERS (FOR PROBING)
-    .register_00_o         ( periph1_reg_00_o                          ),
-    .register_01_o         ( periph1_reg_01_o                          ),
-    .register_02_o         ( periph1_reg_02_o                          ),
-    .register_03_o         ( periph1_reg_03_o                          ),
-    .register_04_o         ( periph1_reg_04_o                          ),
-    .register_05_o         ( periph1_reg_05_o                          ),
-    .register_06_o         ( periph1_reg_06_o                          ),
-    .register_07_o         ( periph1_reg_07_o                          ),
-
-    .register_08_i         ( periph1_reg_08_i                          ),
-    .register_09_i         ( periph1_reg_09_i                          ),
-    .register_10_i         ( periph1_reg_10_i                          ),
-    .register_11_i         ( periph1_reg_11_i                          ),
-    .register_12_i         ( periph1_reg_12_i                          ),
-    .register_13_i         ( periph1_reg_13_i                          ),
-    .register_14_i         ( periph1_reg_14_i                          ),
-    .register_15_i         ( periph1_reg_15_i                          )
- );
-
-//=============================================================================
-// 9) AHB PERIPHERAL #2
-//=============================================================================
-
-ahb_periph_example #(.ASYNC_RST_EN(ASYNC_RST_EN)) ahb_periph_example_inst2 (
-
-// AHB CLOCK & RESET
-    .hclk_i                ( hclk_i                                    ),
-    .hresetn_i             ( hresetn_i                                 ),
-    .hclk_en_o             ( s_periph2_hclk_en                         ),
-
-// AHB INTERFACE
-    .haddr_i               ( s_periph2_haddr[6:0]                      ),
-    .hprot_i               ( s_periph2_hprot                           ),
-    .hready_i              ( s_periph2_hready                          ),
-    .hsize_i               ( s_periph2_hsize                           ),
-    .hsmode_i              ( s_periph2_hauser[0]                       ),
-    .htrans_i              ( s_periph2_htrans                          ),
-    .hwdata_i              ( s_periph2_hwdata                          ),
-    .hwrite_i              ( s_periph2_hwrite                          ),
-    .hsel_i                ( s_periph2_hsel                            ),
-    .hrdata_o              ( s_periph2_hrdata                          ),
-    .hreadyout_o           ( s_periph2_hreadyout                       ),
-    .hresp_o               ( s_periph2_hresp                           ),
-
-// REGISTERS (FOR PROBING)
-    .register_00_o         ( periph2_reg_00_o                          ),
-    .register_01_o         ( periph2_reg_01_o                          ),
-    .register_02_o         ( periph2_reg_02_o                          ),
-    .register_03_o         ( periph2_reg_03_o                          ),
-    .register_04_o         ( periph2_reg_04_o                          ),
-    .register_05_o         ( periph2_reg_05_o                          ),
-    .register_06_o         ( periph2_reg_06_o                          ),
-    .register_07_o         ( periph2_reg_07_o                          ),
-
-    .register_08_i         ( periph2_reg_08_i                          ),
-    .register_09_i         ( periph2_reg_09_i                          ),
-    .register_10_i         ( periph2_reg_10_i                          ),
-    .register_11_i         ( periph2_reg_11_i                          ),
-    .register_12_i         ( periph2_reg_12_i                          ),
-    .register_13_i         ( periph2_reg_13_i                          ),
-    .register_14_i         ( periph2_reg_14_i                          ),
-    .register_15_i         ( periph2_reg_15_i                          )
- );
-
-//=============================================================================
-// 10) ACLINT (RISC-V Advanced Core-Local Interruptor)
+// 7) ACLINT (RISC-V Advanced Core-Local Interruptor)
 //=============================================================================
 //
-//   64KB AHB-Lite slave (decoder bit 6, base 0x02000000).  Provides the
+//   64KB AHB-Lite slave (decoder bit 3, base 0x02000000).  Provides the
 //   machine/supervisor software interrupts (MSIP/SSIP), the machine timer
 //   interrupt (MTIP) and the Zicntr `time` snapshot to the core.  PRIV_CHECK_EN
 //   is 0 (fabric-policed); hprot_i/hsmode_i are accepted but ignored.
 //
-ahb_aclint #(.SU_MODE_EN    (1),                       // S-mode software IRQ (SSWI) present; match core SU_MODE_EN
+ahb_aclint #(.SU_MODE_EN    (SU_MODE_EN),              // S-mode software IRQ (SSWI) with the core's S-mode
              .NUM_HARTS     (1),                       // Single hart
              .PRIV_CHECK_EN (0),                       // Fabric-policed; hprot_i/hsmode_i accepted but ignored
              .LF_SYNC_EN    (1),                       // here the MTIME counter lives (0: real clk_lf_i clock domain, 1: hclk_aon_i clock domain)
@@ -698,15 +690,241 @@ ahb_aclint #(.SU_MODE_EN    (1),                       // S-mode software IRQ (S
 
 
 //=============================================================================
+// 8) BELENOS PORTS
+//=============================================================================
+//
+//   Register port: decoder bit 4, 4KB at 0x10050000.
+//   VRAM window:   decoder bit 5, VRAM_WORDS*4 bytes at 0x82000000.
+//   Belenos itself, with its VRAM and LUT macros, is in the top level.
+//
+assign blnsr_hsel_o       = s_blnsr_hsel;
+assign blnsr_haddr_o      = s_blnsr_haddr;
+assign blnsr_htrans_o     = s_blnsr_htrans;
+assign blnsr_hwrite_o     = s_blnsr_hwrite;
+assign blnsr_hsize_o      = s_blnsr_hsize;
+assign blnsr_hprot_o      = s_blnsr_hprot;
+assign blnsr_hsmode_o     = s_blnsr_hauser[0];
+assign blnsr_hready_o     = s_blnsr_hready;
+assign blnsr_hwdata_o     = s_blnsr_hwdata;
+assign s_blnsr_hrdata     = blnsr_hrdata_i;
+assign s_blnsr_hreadyout  = blnsr_hreadyout_i;
+assign s_blnsr_hresp      = blnsr_hresp_i;
+
+assign blnsv_hsel_o       = s_blnsv_hsel;
+assign blnsv_haddr_o      = s_blnsv_haddr;
+assign blnsv_htrans_o     = s_blnsv_htrans;
+assign blnsv_hwrite_o     = s_blnsv_hwrite;
+assign blnsv_hsize_o      = s_blnsv_hsize;
+assign blnsv_hprot_o      = s_blnsv_hprot;
+assign blnsv_hsmode_o     = s_blnsv_hauser[0];
+assign blnsv_hready_o     = s_blnsv_hready;
+assign blnsv_hwdata_o     = s_blnsv_hwdata;
+assign s_blnsv_hrdata     = blnsv_hrdata_i;
+assign s_blnsv_hreadyout  = blnsv_hreadyout_i;
+assign s_blnsv_hresp      = blnsv_hresp_i;
+
+assign s_blns_hclk_en     = blns_hclk_en_i;
+
+
+//=============================================================================
+// 9) PLIC (RISC-V Platform-Level Interrupt Controller)
+//=============================================================================
+//
+//   4MB AHB-Lite slave (decoder bit 6, base 0x0C000000). Context 0 drives the
+//   hart's M-mode external interrupt, context 1 its S-mode one. KEY and SW
+//   reach the hart only through the PLIC.
+//
+assign plic_irq_src = {gpio_ard_irq,                        // [47:32] Arduino GPIO pins 15..0
+                       3'b000,                              // [31:29] unused
+                       periph0_irq_sw,                      // [28]    SW
+                       periph0_irq_key,                     // [27]    KEY
+                       gpio_irq,                            // [26:1]  GPIO pins 25..0
+                       1'b0};                               // [0]     reserved
+
+ahb_plic #(.NUM_SOURCES   (47),                        // Sources 1..47
+           .NUM_HARTS     (1),                         // Single hart
+           .SU_MODE_EN    (SU_MODE_EN),                // S-mode context with the core's S-mode
+           .PRIO_BITS     (3),                         // Priorities 0..7
+           .PRIV_CHECK_EN (1),                         // M/S/U access policy from hprot_i[1] + hsmode_i
+           .ASYNC_RST_EN  (ASYNC_RST_EN))      ahb_plic_inst (
+
+// AHB CLOCK & RESET
+    .hclk_i                ( hclk_i                                    ),
+    .hresetn_i             ( hresetn_i                                 ),
+    .hclk_en_o             ( s_plic_hclk_en                            ),
+
+// AHB-LITE SLAVE INTERFACE
+    .hsel_i                ( s_plic_hsel                               ),
+    .haddr_i               ( s_plic_haddr[21:0]                        ),
+    .hwrite_i              ( s_plic_hwrite                             ),
+    .hsize_i               ( s_plic_hsize                              ),
+    .htrans_i              ( s_plic_htrans                             ),
+    .hprot_i               ( s_plic_hprot                              ),
+    .hsmode_i              ( s_plic_hauser[0]                          ),
+    .hready_i              ( s_plic_hready                             ),
+    .hwdata_i              ( s_plic_hwdata                             ),
+    .hrdata_o              ( s_plic_hrdata                             ),
+    .hreadyout_o           ( s_plic_hreadyout                          ),
+    .hresp_o               ( s_plic_hresp                              ),
+
+// INTERRUPT SOURCES
+    .irq_src_i             ( plic_irq_src                              ),
+
+// PER-HART INTERRUPT OUTPUTS
+    .irq_m_external_o      ( plic_irq_m_external_o                     ),
+    .irq_s_external_o      ( plic_irq_s_external_o                     )
+);
+
+
+//=============================================================================
+// 10) GPIO
+//=============================================================================
+//
+//   26 pins, APB completer 1: 4KB at 0x10041000; the 128-byte register
+//   window repeats across it. Fabric-policed (PRIV_CHECK_EN=0).
+//
+wire        gpio_wake;
+
+wire              [25:0] gpio_hdr_ie;                 // input enables: FPGA pads keep their receivers on
+
+apb_gpio #(.GPIO_NR       (26),                        // GPIO_1 header pins 1-28
+           .ADDRW         (7),                         // 128-byte register window
+           .SYNC_EN       (1),                         // Asynchronous pad inputs
+           .MDELEG_RST    (9'h10F),                    // MDELEG: Machine mode only, PSLVERR
+           .INP_CGATE_EN  (0),                         // No clock gate on the FPGA clock tree
+           .ASYNC_RST_EN  (ASYNC_RST_EN))      apb_gpio_hdr_inst (
+
+// APB CLOCK & RESET
+    .pclk_i                ( hclk_i                                    ),
+    .pclk_aon_i            ( hclk_aon_i                                ),  // input path: pins watched while the bus clock is gated
+    .presetn_i             ( hresetn_i                                 ),
+    .pclk_en_o             ( apb_gpio_pclk_en                          ),
+    .scan_mode_i           ( 1'b0                                      ),  // functional mode; no DFT insertion at this level
+
+// APB INTERFACE
+    .psel_i                ( apb_psel[1]                               ),
+    .penable_i             ( apb_penable                               ),
+    .paddr_i               ( apb_paddr[6:0]                            ),
+    .pwrite_i              ( apb_pwrite                                ),
+    .pwdata_i              ( apb_pwdata                                ),
+    .pstrb_i               ( apb_pstrb                                 ),
+    .pprot_i               ( apb_pprot                                 ),
+    .psmode_i              ( apb_psmode                                ),
+    .prdata_o              ( apb_prdata[63:32]                         ),
+    .pready_o              ( apb_pready[1]                             ),
+    .pslverr_o             ( apb_pslverr[1]                            ),
+
+// PINS
+    .gpio_i                ( gpio_i                                    ),
+    .gpio_o                ( gpio_o                                    ),
+    .gpio_oe_o             ( gpio_oe_o                                 ),
+    .gpio_ie_o             ( gpio_hdr_ie                                 ),  // FPGA pads: input receivers always on
+
+// INTERRUPTS
+    .irq_o                 ( gpio_irq                                  ),
+    .irq_any_o             ( gpio_irq_any                              ),
+
+// ALTERNATE FUNCTIONS (ALT_NR=0: none)
+    .alt0_o_i              ( 26'h0                                     ),
+    .alt0_oe_i             ( 26'h0                                     ),
+    .alt0_act_o            ( gpio_alt_act_unused[25:0]                 ),
+    .alt1_o_i              ( 26'h0                                     ),
+    .alt1_oe_i             ( 26'h0                                     ),
+    .alt1_act_o            ( gpio_alt_act_unused[51:26]                ),
+    .alt2_o_i              ( 26'h0                                     ),
+    .alt2_oe_i             ( 26'h0                                     ),
+    .alt2_act_o            ( gpio_alt_act_unused[77:52]                ),
+    .alt3_o_i              ( 26'h0                                     ),
+    .alt3_oe_i             ( 26'h0                                     ),
+    .alt3_act_o            ( gpio_alt_act_unused[103:78]               ),
+
+// WAKE (no oscillator controller on this board)
+    .gpio_wake_o           ( gpio_wake                                 )
+);
+wire        gpio_wake_unused = gpio_wake;
+
+
+//=============================================================================
+// 10b) GPIO (Arduino header)
+//=============================================================================
+//
+//   16 pins, ARDUINO_IO[15:0], APB completer 2: 4KB at 0x10042000; the
+//   128-byte register window repeats across it. Fabric-policed.
+//
+wire        gpio_ard_wake;
+
+wire              [15:0] gpio_ard_ie;                 // input enables: FPGA pads keep their receivers on
+
+apb_gpio #(.GPIO_NR       (16),                        // Arduino header D0-D13, SDA, SCL
+           .ADDRW         (7),                         // 128-byte register window
+           .SYNC_EN       (1),                         // Asynchronous pad inputs
+           .MDELEG_RST    (9'h10F),                    // MDELEG: Machine mode only, PSLVERR
+           .INP_CGATE_EN  (0),                         // No clock gate on the FPGA clock tree
+           .ASYNC_RST_EN  (ASYNC_RST_EN))      apb_gpio_ard_inst (
+
+// APB CLOCK & RESET
+    .pclk_i                ( hclk_i                                    ),
+    .pclk_aon_i            ( hclk_aon_i                                ),  // input path: pins watched while the bus clock is gated
+    .presetn_i             ( hresetn_i                                 ),
+    .pclk_en_o             ( apb_gpio_ard_pclk_en                      ),
+    .scan_mode_i           ( 1'b0                                      ),  // functional mode; no DFT insertion at this level
+
+// APB INTERFACE
+    .psel_i                ( apb_psel[2]                               ),
+    .penable_i             ( apb_penable                               ),
+    .paddr_i               ( apb_paddr[6:0]                            ),
+    .pwrite_i              ( apb_pwrite                                ),
+    .pwdata_i              ( apb_pwdata                                ),
+    .pstrb_i               ( apb_pstrb                                 ),
+    .pprot_i               ( apb_pprot                                 ),
+    .psmode_i              ( apb_psmode                                ),
+    .prdata_o              ( apb_prdata[95:64]                         ),
+    .pready_o              ( apb_pready[2]                             ),
+    .pslverr_o             ( apb_pslverr[2]                            ),
+
+// PINS
+    .gpio_i                ( gpio_ard_i                                    ),
+    .gpio_o                ( gpio_ard_o                                    ),
+    .gpio_oe_o             ( gpio_ard_oe_o                                 ),
+    .gpio_ie_o             ( gpio_ard_ie                                 ),  // FPGA pads: input receivers always on
+
+// INTERRUPTS
+    .irq_o                 ( gpio_ard_irq                                  ),
+    .irq_any_o             ( gpio_ard_irq_any                              ),
+
+// ALTERNATE FUNCTIONS (ALT_NR=0: none)
+    .alt0_o_i              ( 16'h0                                     ),
+    .alt0_oe_i             ( 16'h0                                     ),
+    .alt0_act_o            ( gpio_ard_alt_act_unused[15:0]             ),
+    .alt1_o_i              ( 16'h0                                     ),
+    .alt1_oe_i             ( 16'h0                                     ),
+    .alt1_act_o            ( gpio_ard_alt_act_unused[31:16]            ),
+    .alt2_o_i              ( 16'h0                                     ),
+    .alt2_oe_i             ( 16'h0                                     ),
+    .alt2_act_o            ( gpio_ard_alt_act_unused[47:32]            ),
+    .alt3_o_i              ( 16'h0                                     ),
+    .alt3_oe_i             ( 16'h0                                     ),
+    .alt3_act_o            ( gpio_ard_alt_act_unused[63:48]            ),
+
+// WAKE (no oscillator controller on this board)
+    .gpio_wake_o           ( gpio_ard_wake                                 )
+);
+wire        gpio_ard_wake_unused = gpio_ard_wake;
+
+
+//=============================================================================
 // 11) GLOBAL CLOCK ENABLE
 //=============================================================================
 
 assign  hclk_en_o       =   interconnect_hclk_en  |
                             s_sram_nx_hclk_en     |
-                            s_periph0_hclk_en     |
-                            s_periph1_hclk_en     |
-                            s_periph2_hclk_en     |
-                            s_aclint_hclk_en      ;
+                            s_apb_hclk_en         |
+                            apb_lks_pclk_en       |
+                            apb_gpio_pclk_en      |
+                            apb_gpio_ard_pclk_en  |
+                            s_aclint_hclk_en      |
+                            s_blns_hclk_en        |
+                            s_plic_hclk_en        ;
 
 
 //=============================================================================
@@ -724,14 +942,16 @@ assign  hclk_en_o       =   interconnect_hclk_en  |
 wire                     aclint_mtimer_wake_lf_unused  = aclint_mtimer_wake_lf;
 
 // Unused decoder/address slices
-wire               [4:0] s_x_decoder_1hot_6_2_unused   = s_x_decoder_1hot[6:2];
+wire               [5:0] s_x_decoder_1hot_6_1_unused   = s_x_decoder_1hot[6:1];
 wire              [16:0] s_sram_nx_haddr_31_15_unused  = s_sram_nx_haddr[31:15];
-wire              [24:0] s_periph0_haddr_31_7_unused   = s_periph0_haddr[31:7];
-wire              [24:0] s_periph1_haddr_31_7_unused   = s_periph1_haddr[31:7];
-wire              [24:0] s_periph2_haddr_31_7_unused   = s_periph2_haddr[31:7];
+wire              [15:0] s_apb_haddr_31_16_unused  = s_apb_haddr[31:16];
 wire              [15:0] s_aclint_haddr_31_16_unused   = s_aclint_haddr[31:16];
 wire              [16:0] pmem_addr_full_29_13_unused   = pmem_addr_full[29:13];
-wire              [16:0] sram_x_addr_full_29_13_unused = sram_x_addr_full[29:13];
+wire               [9:0] s_plic_haddr_31_22_unused     = s_plic_haddr[31:22];
+
+// Combined GPIO interrupt (the PLIC takes the per-pin lines)
+wire                     gpio_irq_any_unused           = gpio_irq_any;
+wire                     gpio_ard_irq_any_unused       = gpio_ard_irq_any;
 
 // Fully-unused subordinate sideband fields (sram_nx)
 wire      [HAUSER_W-1:0] s_sram_nx_hauser_unused       = s_sram_nx_hauser;
@@ -740,25 +960,30 @@ wire               [3:0] s_sram_nx_hmaster_unused      = s_sram_nx_hmaster;
 wire                     s_sram_nx_hmastlock_unused    = s_sram_nx_hmastlock;
 wire               [3:0] s_sram_nx_hprot_unused        = s_sram_nx_hprot;
 
-// Fully-unused subordinate sideband fields (periph0)
-wire               [2:0] s_periph0_hburst_unused       = s_periph0_hburst;
-wire               [3:0] s_periph0_hmaster_unused      = s_periph0_hmaster;
-wire                     s_periph0_hmastlock_unused    = s_periph0_hmastlock;
-
-// Fully-unused subordinate sideband fields (periph1)
-wire               [2:0] s_periph1_hburst_unused       = s_periph1_hburst;
-wire               [3:0] s_periph1_hmaster_unused      = s_periph1_hmaster;
-wire                     s_periph1_hmastlock_unused    = s_periph1_hmastlock;
-
-// Fully-unused subordinate sideband fields (periph2)
-wire               [2:0] s_periph2_hburst_unused       = s_periph2_hburst;
-wire               [3:0] s_periph2_hmaster_unused      = s_periph2_hmaster;
-wire                     s_periph2_hmastlock_unused    = s_periph2_hmastlock;
+// Fully-unused subordinate sideband fields (APB bridge)
+wire               [2:0] s_apb_hburst_unused       = s_apb_hburst;
+wire               [3:0] apb_pmaster_unused        = apb_pmaster;   // no APB completer reads the manager ID
+wire              [25:0] gpio_hdr_ie_unused       = gpio_hdr_ie;   // FPGA pads keep their receivers on
+wire              [15:0] gpio_ard_ie_unused       = gpio_ard_ie;   // FPGA pads keep their receivers on
+wire                     s_apb_hmastlock_unused    = s_apb_hmastlock;
 
 // Fully-unused subordinate sideband fields (aclint)
 wire               [2:0] s_aclint_hburst_unused       = s_aclint_hburst;
 wire               [3:0] s_aclint_hmaster_unused      = s_aclint_hmaster;
 wire                     s_aclint_hmastlock_unused    = s_aclint_hmastlock;
+
+// Fully-unused subordinate sideband fields (Belenos register port / VRAM window)
+wire               [2:0] s_blnsr_hburst_unused        = s_blnsr_hburst;
+wire               [3:0] s_blnsr_hmaster_unused       = s_blnsr_hmaster;
+wire                     s_blnsr_hmastlock_unused     = s_blnsr_hmastlock;
+wire               [2:0] s_blnsv_hburst_unused        = s_blnsv_hburst;
+wire               [3:0] s_blnsv_hmaster_unused       = s_blnsv_hmaster;
+wire                     s_blnsv_hmastlock_unused     = s_blnsv_hmastlock;
+
+// Fully-unused subordinate sideband fields (PLIC)
+wire               [2:0] s_plic_hburst_unused         = s_plic_hburst;
+wire               [3:0] s_plic_hmaster_unused        = s_plic_hmaster;
+wire                     s_plic_hmastlock_unused      = s_plic_hmastlock;
 
 
 endmodule

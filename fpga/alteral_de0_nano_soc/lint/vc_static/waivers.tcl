@@ -222,14 +222,22 @@ waive_hdl -add bench_altera_io_model \
 # running. Each of its three 2-FF chains asserts on ~porn_async_i and releases
 # on its own clock edge -- the textbook structure, and the only correct one.
 #
+# The board's clk_lf divider (clk_lf_cnt / clk_lf_q in arvern_fpga.v) is in the
+# same position: it is reset straight from the POR button and has to be running
+# before the ACLINT and the core leave reset (MTIME is clocked from it).
+#
 # CONDITIONAL on the reset style: in an async build rules.tcl disables the rule
-# outright and this entry would be stale.
+# outright and these entries would be stale.
 # ---------------------------------------------------------------------------
 if {[info exists RTL_PARAM_ASYNC_RST_EN] && $RTL_PARAM_ASYNC_RST_EN == 0} {
     waive_hdl -add reset_gen_async_assert \
-              -comment "reset_gen: async-assert / sync-release synchronizers are what generate the sync resets" \
+              -comment "arv_reset_gen: async-assert / sync-release synchronizers are what generate the sync resets" \
               -tag CODING_FF_NO_ASYNC \
-              -filter {Module=~reset_gen}
+              -filter {Signal=~*u_reset_gen/*}
+    waive_hdl -add clk_lf_divider_async_reset \
+              -comment "clk_lf divider (arvern_fpga.v): reset by the POR button, it must run before the generated resets release" \
+              -tag CODING_FF_NO_ASYNC \
+              -filter {Signal=~clk_lf_*}
 }
 
 # ---------------------------------------------------------------------------
@@ -257,6 +265,20 @@ if {[info exists RTL_PARAM_ASYNC_RST_EN] && $RTL_PARAM_ASYNC_RST_EN == 0
               -comment "arv_dtm_cjtag TCKC domain: async reset by design (TCK_ARST=1) -- the probe clock may not be running" \
               -tag CODING_FF_NO_ASYNC \
               -filter {Signal=~*g_cjtag.u_dtm/*}
+}
+
+# ---------------------------------------------------------------------------
+# JTAG (DTM_TYPE=0) TCK-domain flops are async-reset by IP design, for the
+# same reason as the cJTAG front end: TCK comes from the probe and may not be
+# running (arv_dtm_jtag.v u_wake_tog and the TAP). Same scoping caveat as above.
+# ---------------------------------------------------------------------------
+if {[info exists RTL_PARAM_ASYNC_RST_EN] && $RTL_PARAM_ASYNC_RST_EN == 0
+    && [info exists RTL_PARAM_DEBUG_EN] && $RTL_PARAM_DEBUG_EN != 0
+    && [info exists RTL_PARAM_DTM_TYPE] && $RTL_PARAM_DTM_TYPE == 0} {
+    waive_hdl -add jtag_tck_domain_async_reset \
+              -comment "arv_dtm_jtag TCK domain: async reset by design -- the probe clock may not be running" \
+              -tag CODING_FF_NO_ASYNC \
+              -filter {Signal=~*g_jtag.u_dtm/*}
 }
 
 # ---------------------------------------------------------------------------
@@ -318,24 +340,37 @@ waive_hdl -add altera_multimodule_files \
           -tag CODING_DECL_MULTIMOD_FILE
 
 # ---------------------------------------------------------------------------
-# GPIO_1: the 40-pin header. Bits [4:0],[11:6] carry the DTM; bit [5] is a
-# deliberate gap that keeps the UART and I2C pairs aligned on the connector;
-# [35:12] are unused and idled Hi-Z (see the pin map in arvern_fpga.v). The
-# unused bits are the unconnected inout / unused net the two tags report.
+# GPIO_1: the 40-pin header. Bits [25:0] carry the GPIO pins, [33:26] the DTM,
+# [35:34] the debug 3.3V / GND references (see the pin map in arvern_fpga.v).
 #
-# CODING_SEQ_INOUT_CLK: GPIO_1[10] is CJTAG_TCKC, the probe's clock, and it
-# clocks the TCKC-domain synchronizer directly. An inout pad used as a clock is
-# the rule's concern; here the pad is input-only (oe tied 0) and the clock has
-# no other possible source.
+# CODING_SEQ_INOUT_CLK: the probe clock -- GPIO_1[32] JTAG_TCK (DTM_TYPE=0) or
+# CJTAG_TCKC (DTM_TYPE=3) -- clocks the DTM's TCK-domain flops
+# directly. An inout pad used as a clock is the rule's concern; here the pad is
+# input-only (oe tied 0) and the clock has no other possible source.
 # ---------------------------------------------------------------------------
-waive_hdl -add gpio1_unused_header_pins \
-          -comment "GPIO_1[35:12],[5]: unused header pins idled Hi-Z by design (pin map in arvern_fpga.v)" \
+if {[info exists RTL_PARAM_DEBUG_EN] && $RTL_PARAM_DEBUG_EN != 0
+    && [info exists RTL_PARAM_DTM_TYPE]
+    && ($RTL_PARAM_DTM_TYPE == 0 || $RTL_PARAM_DTM_TYPE == 3)} {
+    # By tag only: the violation is reported on the pad or on its io_buf inout
+    # depending on how the tool compresses it, and the probe clock is the only
+    # inout pad on this board that clocks a register.
+    waive_hdl -add probe_clock_from_pad \
+              -comment "GPIO_1[32] JTAG_TCK / CJTAG_TCKC: the probe clock enters on an input-only io_buf pad" \
+              -tag CODING_SEQ_INOUT_CLK
+}
+
+# GPIO_1[35:34]: the debug 3.3V / GND references, constant outputs on two bits
+# of the inout header vector: no pad reads them back.
+waive_hdl -add gpio1_debug_references \
+          -comment "GPIO_1[35:34] debug references: constant outputs on the inout header, never read (pin map in arvern_fpga.v)" \
           -tag {CONN_PORT_INOUT_UNCONN SYN_NET_UNUSED} \
           -filter {Signal=~GPIO_1*}
-if {[info exists RTL_PARAM_DEBUG_EN] && $RTL_PARAM_DEBUG_EN != 0
-    && [info exists RTL_PARAM_DTM_TYPE] && $RTL_PARAM_DTM_TYPE == 3} {
-    waive_hdl -add cjtag_tckc_from_pad \
-              -comment "GPIO_1[10] is CJTAG_TCKC: the probe clock enters on an input-only io_buf pad" \
-              -tag CODING_SEQ_INOUT_CLK \
-              -filter {Signal=~GPIO_1*}
-}
+
+# ---------------------------------------------------------------------------
+# GPIO_0: the LT24 header. The pins not used by the LT24 (pin map in
+# arvern_fpga.v) are idled Hi-Z.
+# ---------------------------------------------------------------------------
+waive_hdl -add gpio0_unused_header_pins \
+          -comment "GPIO_0 pins not used by the LT24: unused header pins idled Hi-Z by design (pin map in arvern_fpga.v)" \
+          -tag {CONN_PORT_INOUT_UNCONN SYN_NET_UNUSED} \
+          -filter {Signal=~GPIO_0*}

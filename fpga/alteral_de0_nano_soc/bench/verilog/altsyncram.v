@@ -12,7 +12,8 @@
 // File Name          : altsyncram.v
 // Module Description : Minimal behavioral model of Altera altsyncram for
 //                     simulation with iverilog. Supports SINGLE_PORT mode
-//                     with byte-enable, registered output, and clock enable.
+//                     with byte-enable (any width_byteena_a), registered
+//                     output, and clock enable.
 //----------------------------------------------------------------------------
 
 module altsyncram (
@@ -95,6 +96,7 @@ reg [width_a-1:0] mem [0:numwords_a-1];
 reg [width_a-1:0] q_a_reg;
 
 integer idx;
+integer bi;
 
 initial begin
     for (idx = 0; idx < numwords_a; idx = idx + 1)
@@ -104,12 +106,13 @@ end
 
 always @(posedge clock0) begin
     if (clocken0) begin
-        // Write with byte enables
+        // Write with byte enables (a single enable bit covers the whole word)
         if (wren_a) begin
-            if (byteena_a[0]) mem[address_a][ 7: 0] <= data_a[ 7: 0];
-            if (byteena_a[1]) mem[address_a][15: 8] <= data_a[15: 8];
-            if (byteena_a[2]) mem[address_a][23:16] <= data_a[23:16];
-            if (byteena_a[3]) mem[address_a][31:24] <= data_a[31:24];
+            if (width_byteena_a == 1)
+                mem[address_a] <= data_a;
+            else
+                for (bi = 0; bi < width_byteena_a; bi = bi + 1)
+                    if (byteena_a[bi]) mem[address_a][bi*byte_size +: byte_size] <= data_a[bi*byte_size +: byte_size];
         end
 
         // Registered read output (for CLOCK0 mode)

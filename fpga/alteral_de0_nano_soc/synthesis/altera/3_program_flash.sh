@@ -24,7 +24,7 @@ if [ $# -ne $EXPECTED_ARGS ]; then
     echo ""
     echo "ERROR          : wrong number of arguments"
     echo "USAGE          : ./3_program_flash.sh <bitstream name>"
-    echo "EXAMPLE        : ./3_program_flash.sh    leds"
+    echo "EXAMPLE        : ./3_program_flash.sh    demo_leds"
     echo ""
     echo "AVAILABLE JIC FILES (run ./2_generate_flash_file.sh first):"
     for fullfile in ./bitstreams/*.jic ; do

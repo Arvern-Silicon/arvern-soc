@@ -1,0 +1,21 @@
+#!/bin/bash
+# ----------------------------------------------------------------------------
+#          _    _           Family:    aRVern System IPs
+#         / \__/ \          File:      run_all
+#        /   /\   \         --------------------------------------------
+#    ===/   /=========      Copyright: (c) 2026, aRVern-dev
+#      /   / RV \   \       Contact:   arvernsilicon@gmail.com
+#     /___/______\___\      GitHub:    https://github.com/Arvern-Silicon
+#
+# SPDX-License-Identifier: BSD-3-Clause
+# Full license text is available in the LICENSE file at the repository root.
+# ----------------------------------------------------------------------------
+# Board regression: the firmware of each test on the SoC RTL, its panel images
+# against golden/<test>.txt and its Belenos GPU trace checked
+# (bin/soc_regress.py has the details).
+#
+#   ./run_all [-j N] [--tier quick|nightly] [test ...]
+#   ./run_all --bless [test ...]     write the golden lists of the passing tests
+# Each test runs in ../run_<test>/; the summary is ../regress_summary.log.
+# ----------------------------------------------------------------------------
+exec python3 ../bin/soc_regress.py "$@"

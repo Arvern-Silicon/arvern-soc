@@ -38,6 +38,40 @@ check the terms below before redistributing a build.
   section (`csrci mstatus, 8` to clear `MIE`, restored on unlock). It clobbers
   only `a1`/`x11`, so it is valid on RV32E as well as RV32I.
 
+## IBM Plex Sans (rendered text)
+
+- **Location:** `fpga/alteral_de0_nano_soc/software/apps/demo_arvern_logo/logo_data.h`
+  (the `txt_*` bitmaps), `fpga/alteral_de0_nano_soc/software/apps/demo_effects/font_data.h`
+  (the scroller font) and `fpga/alteral_de0_nano_soc/software/apps/demo_text/text_data.h`
+  (the text demo's fonts and title).
+- **What is included:** no font file. `demo_arvern_logo/tools/logo2c.py` renders the logo
+  demo's few text lines from IBM Plex Sans SemiBold, and `demo_effects/tools/font2c.py` the
+  scroller's capitals, digits and punctuation from IBM Plex Sans Bold, and
+  `demo_text/tools/text2c.py` the text demo's fonts (Medium, SemiBold, Bold) and title, all
+  at build time, stored as 1, 2 or 4-bit bitmaps.
+- **Upstream:** https://github.com/IBM/plex
+- **License:** **SIL Open Font License 1.1**. The OFL covers the font software; images
+  rendered with the font, like these bitmaps, are not font software and are free to use.
+  The font itself is not redistributed here.
+- **Copyright:** IBM Corp.
+
+## MP3 decoding tables (audio player)
+
+- **Location:** `fpga/sipeed_tang_console_138k/software/apps/audio_player/mp3_tab.h`.
+- **What is included:** data tables only. From **minimp3**: the Layer III Huffman decoding
+  trees (`huff_tab`, `huff_tab32`, `huff_tab33`, `huff_index`, `huff_linbits`) and the
+  scale-factor band widths (`sfb_long`, `sfb_short`). From **PDMP3**: the synthesis window
+  D[] of ISO/IEC 11172-3 (`synth_d`, converted to Q30; cross-checked against minimp3's own
+  copy of the window). The other tables of `mp3_tab.h` and the unrolled DCT of
+  `mp3_dct32.h` are computed from the standard's formulas. The decoder (`mp3.c`) is
+  aRVern's own code; its fast 18-point DCT-IV follows minimp3's factorization (two 9-point
+  DCT-IIIs and twiddles).
+- **Upstream:** https://github.com/lieff/minimp3 (commit
+  `ea99364f61c14656440e8d77e9c233ccf3124633`) and https://github.com/technosaurus/PDMP3
+  (commit `2a206a3ada78ec4d13434847f05f50097c60c36a`).
+- **License:** minimp3: **CC0 1.0** (public domain dedication); PDMP3: **The Unlicense**
+  (public domain dedication). Neither imposes conditions.
+
 ### Note for license scanners
 
 An automated scan of this repository will report both `BSD-3-Clause` (aRVern's own

@@ -1,0 +1,27 @@
+# The game data (id Software's shareware episode): fetched by tools/fetch_data.py,
+# not redistributed here; with it, everything made from it
+/data/
+/sim/sd_image.bin
+/sim/sd_image.mem
+/sim/music/
+/sim/first_frames/
+# Build outputs
+*.elf
+*.ihex
+*.map
+/obj/
+/arv/obj/
+/arv/obj_sim/
+/arv/undef.txt
+/host/*.o
+/host/*.txt
+/host/*.log
+/host/frames/
+/host/wolf3d_host
+/host/wolf3d_host.dSYM/
+/port/gen_tables
+/tools/render_music
+/tools/render_sfx
+# FatFs: the source only (the release's documents and archive left out)
+/third_party/ff15a.zip
+/third_party/fatfs/documents/

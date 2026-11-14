@@ -8,7 +8,7 @@ if [ $# -ne $EXPECTED_ARGS ]; then
     echo ""
     echo "ERROR          : wrong number of arguments"
     echo "USAGE          : ./1_program_fpga.sh <bitstream name>"
-    echo "EXAMPLE        : ./1_program_fpga.sh    leds"
+    echo "EXAMPLE        : ./1_program_fpga.sh    demo_leds"
     echo ""
     echo "AVAILABLE BITSTREAMS:"
     for fullfile in ./bitstreams/*.sof ; do

@@ -5,7 +5,7 @@ Both a running OpenOCD (`arvern-ft232h-gdb.cfg`) and `arvern-gdbserver`
 JTAG build (`DTM_TYPE = 0`; for the other transports see [`README.md`](README.md)). Start
 one of those, then point your IDE's *remote GDB* at that port. Use the RISC-V bare-metal GDB
 (`riscv-none-elf-gdb`); build the ELF with `-Og`/`-O0` for a clean source view
-(`make TC_OPT=-Og` in `../software/apps/leds`).
+(`make TC_OPT=-Og` in `../software/apps/demo_leds`).
 
 ## VSCode
 
@@ -20,7 +20,7 @@ one of those, then point your IDE's *remote GDB* at that port. Use the RISC-V ba
       "name": "aRVern: GDB on :3333",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/software/apps/leds/leds.elf",
+      "program": "${workspaceFolder}/software/apps/demo_leds/demo_leds.elf",
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
       "miDebuggerPath": "riscv-none-elf-gdb",
@@ -47,13 +47,13 @@ one of those, then point your IDE's *remote GDB* at that port. Use the RISC-V ba
 |---|---|
 | **'target remote' args** | `localhost:3333` |
 | **GDB** | `riscv-none-elf-gdb` (or *Bundled* if it's a RISC-V build) |
-| **Symbol file** | `…/software/apps/leds/leds.elf` |
+| **Symbol file** | `…/software/apps/demo_leds/demo_leds.elf` |
 | **Download** | *Never* — the firmware is loaded by `monitor`/`load` below |
 
 Then add `monitor reset halt` and `load` to *Advanced GDB Server Options* (or a project
 `.gdbinit`) so they run on connect. Do **not** source [`arvern.gdbinit`](arvern.gdbinit)
 from CLion: it opens its own connection to `:3333`. It is meant for command-line GDB
-(`riscv-none-elf-gdb -x arvern.gdbinit …/leds.elf`); its `reload` helper does
+(`riscv-none-elf-gdb -x arvern.gdbinit …/demo_leds.elf`); its `reload` helper does
 `monitor reset halt` + `load`.
 
 > **The reset command must be `monitor reset halt`, never a bare `monitor reset`.**
@@ -105,7 +105,7 @@ from CLion: it opens its own connection to `:3333`. It is meant for command-line
 
 > Attaching does **not** reset the hart (the `gdb-attach` event only halts it), so GDB
 > stops wherever the program happens to be. A breakpoint *behind* that PC will never be
-> hit — `break main` on an already-running `leds` looks like a hang, because the demo
+> hit — `break main` on an already-running `demo_leds` looks like a hang, because the demo
 > spins inside `main` and never re-enters it. `monitor reset halt` before setting
 > breakpoints avoids this; it is the reason the connect commands above exist.
 

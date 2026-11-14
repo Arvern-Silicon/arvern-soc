@@ -2,8 +2,10 @@
 
 // Altera altsyncram: defparam is the standard instantiation style for Altera megafunctions
 lint_off -rule DEFPARAM        -file "*/sram_8kb_wrapper.v"
-lint_off -rule DEFPARAM        -file "*/pmem_32kb.v"
-lint_off -rule DEFPARAM        -file "*/sram_32kb.v"
+lint_off -rule DEFPARAM        -file "*/pmem_48kb.v"
+lint_off -rule DEFPARAM        -file "*/sram_48kb.v"
+lint_off -rule DEFPARAM        -file "*/ram_32x38400.v"
+lint_off -rule DEFPARAM        -file "*/ram_24x512.v"
 
 // Altsyncram behavioral model: unused parameters are expected
 lint_off -rule UNUSEDPARAM    -file "*/altsyncram.v"
@@ -27,11 +29,11 @@ lint_off -rule LATCH            -file "*/arv_cgate.v"
 // cJTAG (DTM_TYPE=3) only. Two false positives from whole-vector granularity and
 // from the deliberate mixed-reset architecture:
 //
-//  * UNOPTFLAT on cjtag_tmsc_oe: the reported cycle leaves via GPIO_1[11] (TMSC
-//    output enable) and returns through the GPIO_1[10] (TCKC) input buffer, i.e.
+//  * UNOPTFLAT on cjtag_tmsc_oe: the reported cycle leaves via GPIO_1[33] (TMSC
+//    output enable) and returns through the GPIO_1[32] (TCKC) input buffer, i.e.
 //    two DIFFERENT bits of the same `inout [35:0] GPIO_1` vector. Verilator's
-//    analysis is per-signal, not per-bit, so it cannot see that bit 11 never
-//    feeds bit 10. tmsc_oe_o is built only from flop outputs plus ~tckc_i, so no
+//    analysis is per-signal, not per-bit, so it cannot see that bit 33 never
+//    feeds bit 32. tmsc_oe_o is built only from flop outputs plus ~tckc_i, so no
 //    real combinational loop exists.
 //
 //  * SYNCASYNCNET on dbgresetn: with ASYNC_RST_EN=0 the clk_i domain uses a

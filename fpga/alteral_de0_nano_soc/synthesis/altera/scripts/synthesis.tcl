@@ -38,6 +38,10 @@ set_global_assignment   -name NUM_PARALLEL_PROCESSORS             2
 set_global_assignment   -name OPTIMIZATION_MODE           "HIGH PERFORMANCE EFFORT"
 #set_global_assignment  -name OPTIMIZATION_MODE           "AGGRESSIVE PERFORMANCE"
 set_global_assignment   -name OPTIMIZATION_TECHNIQUE       SPEED                        ;# AREA - BALANCED - SPEED
+# Fitter seed: the critical paths (core load/store -> fused SRAM write enables, PLIC ->
+# branch) sit near the 50 MHz limit and the slack moves by about 1 ns from one seed to
+# the next; seed 4 is a placement that closes with margin (re-check after big changes)
+set_global_assignment   -name SEED 3
 
 set_global_assignment   -name ALLOW_REGISTER_MERGING       ON
 set_global_assignment   -name ALLOW_REGISTER_DUPLICATION   ON
@@ -53,6 +57,17 @@ set_global_assignment   -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
 set_global_assignment   -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
 set_global_assignment   -name PARTITION_COLOR 16764057 -section_id Top
 set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
+
+# Experiment builds: QUARTUS_PARAM_OVERRIDES="NAME=VALUE ..." changes those
+# top-level parameters (the RTL is left as it is). With the docker Quartus,
+# pass the variable into the container (-e QUARTUS_PARAM_OVERRIDES in QUARTUS_PFX)
+if {[info exists ::env(QUARTUS_PARAM_OVERRIDES)]} {
+    foreach ov $::env(QUARTUS_PARAM_OVERRIDES) {
+        lassign [split $ov "="] pname pval
+        set_parameter -name $pname $pval
+        puts "Override: $pname = $pval"
+    }
+}
 
 # Clock
 set_global_assignment   -name SDC_FILE ../scripts/design.sdc
@@ -181,10 +196,10 @@ my_pin_assignment   ADC_SCK          PIN_V10    "3.3-V LVTTL"
 my_pin_assignment   ADC_SDI          PIN_AC4    "3.3-V LVTTL"
 my_pin_assignment   ADC_SDO          PIN_AD4    "3.3-V LVTTL"
 
-# --- Debug-transport pad settings on the GPIO_1 (JP7) DTM pins ----------------
+# --- Debug-transport pad settings on the GPIO_1 (JP7) DTM pins 31-38 ----------
 # Cyclone V I/O offers a programmable weak pull-UP only (no internal pull-down).
 # DTM_TYPE is read straight from the RTL parameter so the two can't drift.
-#   0 = JTAG : IEEE 1149.1 pull-ups on TMS/TDI/TRST_N (+ TDO, floats when released)
+#   0 = JTAG : IEEE 1149.1 pull-ups on TMS/TDI (+ TDO, floats when released)
 #   1 = UART : pull-up on RX so a disconnected line reads idle-high (TX is push-pull)
 #   2 = I2C  : SCL/SDA are open-drain and NON-FUNCTIONAL without a pull-up
 #   3 = cJTAG: bus-hold (keeper) on TCKC/TMSC; TMSC is undriven while TCKC is high
@@ -211,22 +226,21 @@ set DTM_TYPE [verilog_param ../../../rtl/verilog/arvern_fpga.v DTM_TYPE 0]
 post_message "DTM debug transport: DTM_TYPE=$DTM_TYPE (from arvern_fpga.v)"
 
 if {$DTM_TYPE == 3} {
-    set_instance_assignment -name ENABLE_BUS_HOLD_CIRCUITRY ON -to GPIO_1[11]  ;# CJTAG_TMSC
-    set_instance_assignment -name ENABLE_BUS_HOLD_CIRCUITRY ON -to GPIO_1[10]  ;# CJTAG_TCKC
+    set_instance_assignment -name ENABLE_BUS_HOLD_CIRCUITRY ON -to GPIO_1[33]  ;# CJTAG_TMSC
+    set_instance_assignment -name ENABLE_BUS_HOLD_CIRCUITRY ON -to GPIO_1[32]  ;# CJTAG_TCKC
 
 } elseif {$DTM_TYPE == 2} {
-    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[7]   ;# I2C_SCL
-    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[8]   ;# I2C_SDA
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[28]  ;# I2C_SCL
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[29]  ;# I2C_SDA
 
 } elseif {$DTM_TYPE == 1} {
-    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[9]   ;# UART_RX
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[26]  ;# UART_RX
 
 } elseif {$DTM_TYPE == 0} {
-    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[1]   ;# JTAG_TMS
-    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[2]   ;# JTAG_TDI
-    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[3]   ;# JTAG_TRST_N
-    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[4]   ;# JTAG_TDO
-    # GPIO_1[0]/TCK ideally idles quiet (pull-down): not available internally on
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[33]  ;# JTAG_TMS
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[31]  ;# JTAG_TDI
+    set_instance_assignment -name WEAK_PULL_UP_RESISTOR     ON -to GPIO_1[30]  ;# JTAG_TDO
+    # GPIO_1[32]/TCK ideally idles quiet (pull-down): not available internally on
     # Cyclone V -> add an external resistor if a defined level is required.
 }
 

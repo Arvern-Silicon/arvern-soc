@@ -11,26 +11,31 @@ The debug transport is picked at build time by `DTM_TYPE` in
 JTAG (`DTM_TYPE = 0`)**, and most of this page (FT232H wiring, OpenOCD configs,
 `run-gdbserver.sh`, `ide-setup.md`) targets that build.
 
-| `DTM_TYPE` | Transport | Host side | Prebuilt bitstream |
+| `DTM_TYPE` | Transport | Host side | Prebuilt release asset |
 |---|---|---|---|
-| 0 *(default)* | JTAG | OpenOCD with any adapter it supports, a J-Link, or [`arvern-tools`](https://github.com/Arvern-Silicon/arvern-tools) (FT232H) | `leds_jtag.sof` |
-| 1 | UART | `arvern-tools` | `leds_uart.sof` |
-| 2 | I2C | `arvern-tools` | `leds_i2c.sof` |
-| 3 | cJTAG | a J-Link in its cJTAG mode: SEGGER Ozone (select cJTAG as the target interface when connecting) or the J-Link GDB Server. OpenOCD over cJTAG is not validated; `arvern-tools` cJTAG support is planned. | `leds_cjtag.sof` |
+| 0 *(default)* | JTAG | OpenOCD with any adapter it supports, a J-Link, or [`arvern-tools`](https://github.com/Arvern-Silicon/arvern-tools) (FT232H) | `de0-nano-soc_leds_jtag.zip` |
+| 1 | UART | `arvern-tools` | rebuild |
+| 2 | I2C | `arvern-tools` | rebuild |
+| 3 | cJTAG | a J-Link in its cJTAG mode: SEGGER Ozone (select cJTAG as the target interface when connecting) or the J-Link GDB Server. OpenOCD over cJTAG is not validated; `arvern-tools` cJTAG support is planned. | rebuild |
 
-Prebuilt bitstreams for every transport (`leds_jtag.sof`, `leds_uart.sof`, `leds_i2c.sof`,
-`leds_cjtag.sof`) are attached to each release on the
-[arvern-soc releases page](https://github.com/Arvern-Silicon/arvern-soc/releases); the
-repository holds no bitstreams. Either download one into `../synthesis/altera/bitstreams/`
-and program it:
+A prebuilt `demo_leds` build for the default JTAG transport is attached to each release on
+the [arvern-soc releases page](https://github.com/Arvern-Silicon/arvern-soc/releases); the
+repository holds no bitstreams, and the other transports are a rebuild away (below).
+`de0-nano-soc_leds_jtag.zip` holds three files of the same name: the `.sof`, the bitstream loaded over JTAG (lost at power-off), and the
+`.jic` + `.cdf`, the configuration-flash image and its programming chain (kept across power
+cycles). Unzip it into `../synthesis/altera/bitstreams/` and program it:
 
 ```bash
 cd ../synthesis/altera
-./1_program_fpga.sh leds_cjtag          # or leds_uart, leds_i2c, leds_jtag
+./1_program_fpga.sh de0-nano-soc_leds_jtag     # try it: load the .sof
+./3_program_flash.sh de0-nano-soc_leds_jtag    # keep it: write the .jic to the flash
 ```
 
-or set `DTM_TYPE` in `arvern_fpga.v` and rebuild (`./0_create_bitstream.sh leds`, which
-writes `bitstreams/leds.sof`, then `./1_program_fpga.sh leds`). The Quartus flow reads
+`3_program_flash.sh` needs a Quartus Programmer with USB access (Windows or Linux); on
+macOS, open the `.cdf` in the standalone Quartus Prime Programmer on another machine.
+
+For another transport, set `DTM_TYPE` in `arvern_fpga.v` and rebuild (`./0_create_bitstream.sh demo_leds`, which
+writes `bitstreams/demo_leds.sof`, then `./1_program_fpga.sh demo_leds`). The Quartus flow reads
 `DTM_TYPE` from the RTL and applies the matching pad settings (pull-ups, or bus-hold for
 cJTAG) and the TCK/TCKC timing constraint.
 
@@ -49,20 +54,43 @@ Either way an IDE's *GDB Remote Debug* pointed at `:3333` needs no further chang
 
 ### Wiring — Adafruit FT232H → GPIO_1 header
 
-FT232H in MPSSE mode; **I2C-mode switch OFF**. Common ground. TRST_N is left open
-(the JTAG build enables the pin's internal weak pull-up, so the TAP stays out of reset).
+FT232H in MPSSE mode; **I2C-mode switch OFF**. Common ground. There is no TRST: the TAP
+resets through TMS.
+
+Pins 31–40 have the layout of the Tang Console 138K SDRAM1 header (J10) pins 10–1, so one
+debug cable fits both boards. Pin 40 is driven high (a 3.3 V reference for an adapter's
+VTref) and pin 39 low (a ground reference): I/O pins, a few mA, not a supply. Pins 29/30
+(+3.3 V / GND) do not match J10's 12/11 (GND / +5 V): a cable shared between the boards
+stops at pins 31–40.
 
 | GPIO_1 header pin | FPGA signal | FT232H |
 |---|---|---|
-| 1 · `GPIO_1[0]` | JTAG_TCK | D0 |
-| 2 · `GPIO_1[1]` | JTAG_TMS | D3 |
-| 3 · `GPIO_1[2]` | JTAG_TDI | D1 |
-| 4 · `GPIO_1[3]` | JTAG_TRST_N | *(not connected)* |
-| 5 · `GPIO_1[4]` | JTAG_TDO | D2 |
+| 37 · `GPIO_1[32]` | JTAG_TCK | D0 |
+| 38 · `GPIO_1[33]` | JTAG_TMS | D3 |
+| 36 · `GPIO_1[31]` | JTAG_TDI | D1 |
+| 35 · `GPIO_1[30]` | JTAG_TDO | D2 |
 | 12 or 30 | GND | GND |
 
+### Wiring — J-Link (JTAG) → GPIO_1 header
+
+For Ozone or the J-Link GDB Server with JTAG selected as the target interface. VTref
+must be connected: without it the J-Link reports no target voltage and does not drive
+the pins.
+
+| J-Link 20-pin | Signal | GPIO_1 header pin | FPGA pin |
+|---|---|---|---|
+| 1 · VTref | target voltage | 40 · `GPIO_1[35]` (3.3 V reference) | AC22 |
+| 5 · TDI | JTAG_TDI | 36 · `GPIO_1[31]` | AH18 |
+| 7 · TMS | JTAG_TMS | 38 · `GPIO_1[33]` | AE23 |
+| 9 · TCK | JTAG_TCK | 37 · `GPIO_1[32]` | AD23 |
+| 13 · TDO | JTAG_TDO | 35 · `GPIO_1[30]` | AG21 |
+| 4 (or any even pin 4–20) · GND | ground | 30 · GND | — |
+
+nTRST (3), RTCK (11) and RESET (15) stay unconnected; use a fixed TCK speed, not adaptive
+clocking.
+
 The board-side pin/pad assignment is set in `../synthesis/altera/scripts/synthesis.tcl`
-(weak pull-ups on TMS/TDI/TRST_N/TDO in the JTAG build) and the header map is mirrored
+(weak pull-ups on TMS/TDI/TDO in the JTAG build) and the header map is mirrored
 in `../rtl/verilog/arvern_fpga.v`.
 
 ### Configs
@@ -91,18 +119,19 @@ timing-closed range.
 
 ## cJTAG with a J-Link
 
-Program `leds_cjtag.sof` from the release assets (or rebuild with `DTM_TYPE = 3`). The link is two wires plus
+Rebuild `demo_leds` with `DTM_TYPE = 3` and program it. The link is two wires plus
 reference and ground:
 
 | J-Link 20-pin | Signal | GPIO_1 header pin | FPGA pin |
 |---|---|---|---|
-| 1 · VTref | target voltage | 29 · +3.3 V | — |
-| 7 · TMS | TMSC | 14 · `GPIO_1[11]` | AF20 |
-| 9 · TCK | TCKC | 13 · `GPIO_1[10]` | AG19 |
+| 1 · VTref | target voltage | 40 · `GPIO_1[35]` (3.3 V reference) | AC22 |
+| 7 · TMS | TMSC | 38 · `GPIO_1[33]` | AE23 |
+| 9 · TCK | TCKC | 37 · `GPIO_1[32]` | AD23 |
 | 4 (or any even pin 4–20) · GND | ground | 30 · GND | — |
 
-- Both pads use the Cyclone V bus-hold circuit (`synthesis.tcl`): TMSC is undriven while
-  TCKC is high, and the keeper holds its level, as the OScan1 protocol requires.
+- TCKC and TMSC use the JTAG TCK and TMS pins. In the cJTAG build both pads use the
+  Cyclone V bus-hold circuit (`synthesis.tcl`): TMSC is undriven while TCKC is high, and
+  the keeper holds its level, as the OScan1 protocol requires.
 - TCKC runs between 500 kHz (the J-Link's cJTAG floor) and 6.25 MHz. The upper limit is
   the DTM's escape detector, which oversamples TMSC on the 50 MHz clock and needs
   `f_clk ≥ 8 × f_TCKC` (`design.sdc`;
@@ -114,17 +143,17 @@ OpenOCD over cJTAG is not validated, and `arvern-tools` cJTAG support is planned
 
 ## UART and I2C
 
-Program `leds_uart.sof` or `leds_i2c.sof` from the release assets (or rebuild with `DTM_TYPE = 1` / `2`). The host
+Rebuild `demo_leds` with `DTM_TYPE = 1` (UART) or `2` (I2C) and program it. The host
 side is `arvern-tools`; adapter wiring and selection are in its
 [`doc/adapters.md`](https://github.com/Arvern-Silicon/arvern-tools/blob/main/doc/adapters.md),
-and the `leds` Makefile has `run-uart` / `run-i2c` / `debug-uart` / `debug-i2c` targets.
+and the `demo_leds` Makefile has `run-uart` / `run-i2c` / `debug-uart` / `debug-i2c` targets.
 
 | GPIO_1 header pin | FPGA signal | Pad |
 |---|---|---|
-| 7 · `GPIO_1[6]` | UART_TX (board → adapter RX) | push-pull output |
-| 10 · `GPIO_1[9]` | UART_RX (adapter TX → board) | weak pull-up (UART build) |
-| 8 · `GPIO_1[7]` | I2C_SCL | open-drain, weak pull-up (I2C build) |
-| 9 · `GPIO_1[8]` | I2C_SDA | open-drain, weak pull-up (I2C build) |
+| 32 · `GPIO_1[27]` | UART_TX (board → adapter RX) | push-pull output |
+| 31 · `GPIO_1[26]` | UART_RX (adapter TX → board) | weak pull-up (UART build) |
+| 33 · `GPIO_1[28]` | I2C_SCL | open-drain, weak pull-up (I2C build) |
+| 34 · `GPIO_1[29]` | I2C_SDA | open-drain, weak pull-up (I2C build) |
 | 12 or 30 | GND | — |
 
 The I2C DTM answers at 7-bit address `0x30`.
@@ -148,7 +177,7 @@ core runs.
 |---|---|---|
 | **`arvern-minidebug`** | the **RTT** tab → *Attach* | Resolves the control block from the loaded ELF's `_SEGGER_RTT` symbol, so nothing needs configuring. |
 | **`arvern-gdbserver`** | `--rtt-port 19021`, then `nc localhost 19021` | Works **while GDB holds the adapter** — the only way to see `printf` during an IDE debug session. Scans SRAM for the block (the server never sees your ELF). |
-| **SEGGER tools** | `JLinkRTTViewer`, `JLinkRTTClient`, Ozone | Same protocol, same control block — but they drive a J-Link, wired to the debug pins of whichever DTM the bitstream carries (JTAG pins 1–5 on the default build, cJTAG pins 13/14 with `DTM_TYPE = 3`). |
+| **SEGGER tools** | `JLinkRTTViewer`, `JLinkRTTClient`, Ozone | Same protocol, same control block — but they drive a J-Link, wired to the debug pins of whichever DTM the bitstream carries (JTAG pins 35–38 and 40 on the default build, cJTAG pins 37, 38 and 40 with `DTM_TYPE = 3`). |
 
 Only one consumer at a time: draining advances the target's read pointer
 destructively, so two hosts polling the same block steal bytes from each other.
@@ -167,7 +196,7 @@ memory of a *running* target.
 | File | Purpose |
 |---|---|
 | `run-gdbserver.sh` | Single front door to a GDB server on `:3333` over the JTAG build. Default backend is `arvern-gdbserver` (pure-Python, no OpenOCD needed); any server flag passes through, e.g. `./run-gdbserver.sh --jtag-freq 15000000`. `./run-gdbserver.sh --openocd` dispatches to OpenOCD via `arvern-ft232h-gdb.cfg` instead (TCK/port then come from that cfg). |
-| `arvern.gdbinit` | Command-line GDB script: connect to `:3333`, `load`, stop at `main`, plus `reload` / `regs` / `trap` helpers. `riscv-none-elf-gdb -x arvern.gdbinit …/leds.elf`. Not for IDEs, which open their own connection (see `ide-setup.md`). |
+| `arvern.gdbinit` | Command-line GDB script: connect to `:3333`, `load`, stop at `main`, plus `reload` / `regs` / `trap` helpers. `riscv-none-elf-gdb -x arvern.gdbinit …/demo_leds.elf`. Not for IDEs, which open their own connection (see `ide-setup.md`). |
 | `ide-setup.md` | Copy-paste VSCode `launch.json` and CLion *GDB Remote Debug* settings pointing at `:3333`. |
 
 Both servers as configured here halt on attach (OpenOCD through the `gdb-attach` hook in

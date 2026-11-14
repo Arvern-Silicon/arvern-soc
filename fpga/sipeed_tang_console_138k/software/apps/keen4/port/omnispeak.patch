@@ -1,0 +1,1065 @@
+diff --git a/src/ck_act.c b/src/ck_act.c
+index 376c575..9b95f4f 100644
+--- a/src/ck_act.c
++++ b/src/ck_act.c
+@@ -34,7 +34,29 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+  *
+  */
+ 
++#ifdef ARV_LINKED_VARS
++// Tang port: the variables and actions are C (keen4_vars.c, tools/gen_vars.py);
++// the registrations are no-ops and only the saved games' lookup is left
++void CK_ACT_SetupFunctions() {}
++void CK_ACT_AddFunction(const char *fnName, CK_ACT_Function fn) {}
++void CK_ACT_AddColFunction(const char *fnName, CK_ACT_ColFunction fn) {}
++void CK_VAR_Startup() {}
++void CK_VAR_LoadVars(const char *filename) {}
++
++CK_action *CK_LookupActionFrom16BitOffset(uint16_t offset)
++{
++	for (int i = 0; i < CK_NUM_ACTIONS; ++i)
++		if (ck_actions[i].compatDosPointer == offset)
++			return (CK_action *)&ck_actions[i];
++	return NULL;
++}
++#else
++
++#ifdef ARV_TANG // sized for Keen 4's scripts (the tables are in the VRAM)
++#define CK_FUNCTABL_SIZE 512
++#else
+ #define CK_FUNCTABL_SIZE 1024
++#endif
+ 
+ STR_Table *ck_functionTable;
+ 
+@@ -86,8 +108,19 @@ CK_ACT_ColFunction CK_ACT_GetColFunction(const char *fnName)
+ 	return fnPtr;
+ }
+ 
++#ifdef ARV_TANG // Keen 4's longest string has 508 characters (the parser's buffer is on the stack)
++#define CK_VAR_STRING_LEN 640
++#else
++#define CK_VAR_STRING_LEN 4096
++#endif
++
++#ifdef ARV_TANG // Keen 4: about 1300 variables and 370 actions
++#define CK_VAR_MAXVARS 2048
++#define CK_VAR_MAXACTIONS 384
++#else
+ #define CK_VAR_MAXVARS 8192
+ #define CK_VAR_MAXACTIONS 512
++#endif
+ #define CK_VAR_MAX_ARRAY_LEN 96
+ 
+ STR_Table *ck_varTable;
+@@ -599,9 +632,9 @@ void CK_VAR_ParseString(STR_ParserState *ps)
+ {
+ 	char varName[ID_STR_MAX_TOKEN_LENGTH];
+ 	STR_GetIdent(ps, varName, ID_STR_MAX_TOKEN_LENGTH);
+-	char stringBuf[4096] = {0};
++	char stringBuf[CK_VAR_STRING_LEN] = {0};
+ 	char *valBuf = stringBuf;
+-	size_t lengthRemaining = 4096;
++	size_t lengthRemaining = CK_VAR_STRING_LEN;
+ 	do
+ 	{
+ 		STR_Token tok = STR_GetToken(ps);
+@@ -619,7 +652,7 @@ void CK_VAR_ParseStringArray(STR_ParserState *ps)
+ 	char varName[ID_STR_MAX_TOKEN_LENGTH];
+ 	const char *tempArray[CK_VAR_MAX_ARRAY_LEN];
+ 	STR_GetIdent(ps, varName, ID_STR_MAX_TOKEN_LENGTH);
+-	char stringBuf[4096] = {0};
++	char stringBuf[CK_VAR_STRING_LEN] = {0};
+ 	size_t num_elements = 0;
+ 
+ 	while (true)
+@@ -627,7 +660,7 @@ void CK_VAR_ParseStringArray(STR_ParserState *ps)
+ 
+ 		char *valBuf = stringBuf;
+ 		*valBuf = '\0';
+-		size_t lengthRemaining = 4096;
++		size_t lengthRemaining = CK_VAR_STRING_LEN;
+ 		do
+ 		{
+ 			STR_Token tok = STR_GetToken(ps);
+@@ -722,6 +755,88 @@ void CK_VAR_LoadVars(const char *filename)
+ 
+ 	while (CK_VAR_ParseVar(&parserstate))
+ 		numVarsParsed++;
++#ifdef ARV_TANG
++	// The values are copied into the arena: the text can go
++	MM_FreePtr((mm_ptr_t *)(&parserstate.data));
++#endif
+ 
+ 	CK_Cross_LogMessage(CK_LOG_MSG_NORMAL, "Parsed %d vars from \"%s\" over %d lines (%d actions created).\n", numVarsParsed, filename, parserstate.linecount, ck_actionsUsed);
+ }
++
++#ifdef ARV_DUMP_VARS
++// Tang port: every variable the scripts define, printed for tools/gen_vars.py,
++// which turns them into C (the Tang build links them instead of parsing)
++static void CK_VAR_DumpHex(const char *s)
++{
++	if (!*s)
++		printf(".");
++	for (; *s; ++s)
++		printf("%02x", (unsigned char)*s);
++	printf(" ");
++}
++
++static const char *CK_VAR_FnName(void *fn)
++{
++	if (!fn)
++		return "NULL";
++	for (size_t i = 0; i < ck_functionTable->size; ++i)
++		if (ck_functionTable->arr[i].str && ck_functionTable->arr[i].ptr == fn)
++			return ck_functionTable->arr[i].str;
++	return "?";
++}
++
++void CK_VAR_Dump(void)
++{
++	for (size_t i = 0; i < ck_varTable->size; ++i)
++	{
++		const char *name = ck_varTable->arr[i].str;
++		CK_VAR_Variable *var = (CK_VAR_Variable *)ck_varTable->arr[i].ptr;
++		if (!name)
++			continue;
++		switch (var->type)
++		{
++		case VAR_Bool:
++		case VAR_Int:
++			printf("V INT %s %d\n", name, (int)(intptr_t)var->value);
++			break;
++		case VAR_String:
++			printf("V STR %s ", name);
++			CK_VAR_DumpHex((const char *)var->value);
++			printf("\n");
++			break;
++		case VAR_IntArray:
++			printf("V IARR %s %d", name, (int)var->length);
++			for (size_t k = 0; k < var->length; ++k)
++				printf(" %d", (int)((intptr_t *)var->value)[k]);
++			printf("\n");
++			break;
++		case VAR_StringArray:
++			printf("V SARR %s %d ", name, (int)var->length);
++			for (size_t k = 0; k < var->length; ++k)
++			{
++				CK_VAR_DumpHex(((const char **)var->value)[k]);
++			}
++			printf("\n");
++			break;
++		case VAR_Function:
++			printf("V FUNC %s %s\n", name, CK_VAR_FnName(var->value));
++			break;
++		case VAR_Action:
++			printf("V ACT %s %d\n", name, (int)((CK_action *)var->value - ck_actionData));
++			break;
++		default:
++			printf("V ? %s %d\n", name, (int)var->type);
++		}
++	}
++	for (int i = 0; i < ck_actionsUsed; ++i)
++	{
++		CK_action *a = &ck_actionData[i];
++		printf("A %d %d %d %d %d %d %d %d %d %d %s %s %s %d\n", i, a->compatDosPointer, a->chunkLeft, a->chunkRight,
++			(int)a->type, a->protectAnimation, a->stickToGround, a->timer, a->velX, a->velY,
++			CK_VAR_FnName((void *)a->think), CK_VAR_FnName((void *)a->collide), CK_VAR_FnName((void *)a->draw),
++			a->next ? (int)(a->next - ck_actionData) : -1);
++	}
++	printf("END\n");
++}
++#endif
++#endif // ARV_LINKED_VARS
+diff --git a/src/ck_act.h b/src/ck_act.h
+index e536c8f..1efbed4 100644
+--- a/src/ck_act.h
++++ b/src/ck_act.h
+@@ -47,7 +47,9 @@ void CK_VAR_SetInt(const char *name, intptr_t val);
+ void CK_VAR_SetString(const char *name, const char *val);
+ void CK_VAR_LoadVars(const char *filename);
+ 
+-#ifdef CK_STRINGS_LINKED
++#ifdef ARV_LINKED_VARS
++#define CK_STRING(s) STRING_ ## s
++#elif defined(CK_STRINGS_LINKED)
+ // TODO: This is here in case we want to support building string values directly
+ // into the executable again. (I have an in-progress tool to do this, though
+ // it lacks support for a few things, so it's not workable at present.)
+@@ -56,7 +58,23 @@ void CK_VAR_LoadVars(const char *filename);
+ #define CK_STRING(s) CK_VAR_GetString(#s, #s)
+ #endif
+ 
+-#ifdef CK_VARS_LINKED
++#ifdef ARV_LINKED_VARS
++// Tang port: the scripts' variables generated as C (tools/gen_vars.py)
++#include "keen4_vars.h"
++#define CK_INT(name, def) INT_ ## name
++#define CK_CHUNKNUM(name) INT_ ## name
++#define CK_SOUNDNUM(name) INT_ ## name
++#define CK_ACTION(name) ACT_ ## name
++#define CK_FUNCTION(name) FUNC_ ## name
++typedef int16_t chunk_id_t;
++#define CK_CHUNKID(name) INT_ ## name
++#define CK_LookupChunk(id) (id)
++#define CK_INTARRAY(name) ((intptr_t *)INTARRAY_ ## name)
++#define CK_INTELEMENT(name, i) (INTARRAY_ ## name[i])
++#define CK_STRINGARRAY(name) ((const char **)STRARRAY_ ## name)
++#define CK_STRINGELEMENT(name, i) (STRARRAY_ ## name[i])
++#define CK_FILENAME(name, def) FILENAME_ ## name
++#elif defined(CK_VARS_LINKED)
+ #define CK_INT(name, def) INT_ ## name
+ #define CK_CHUNKNUM(name) INT_ ## name
+ #define CK_SOUNDNUM(name) INT_ ## name
+diff --git a/src/ck_cross.c b/src/ck_cross.c
+index deead11..6a78ea9 100644
+--- a/src/ck_cross.c
++++ b/src/ck_cross.c
+@@ -24,7 +24,7 @@ CK_Log_Message_Class_T ck_cross_logLevel = CK_DEFAULT_LOG_LEVEL;
+ extern bool vl_started;
+ #endif
+ 
+-void CK_PRINTF_FORMAT(2, 3) CK_Cross_LogMessage(CK_Log_Message_Class_T msgClass, const char *format, ...)
++void CK_PRINTF_FORMAT(2, 3) (CK_Cross_LogMessage)(CK_Log_Message_Class_T msgClass, const char *format, ...)
+ {
+ 	// TODO: For now we simply do this.
+ 	va_list args;
+diff --git a/src/ck_cross.h b/src/ck_cross.h
+index 3ed7a9c..ec2bf37 100644
+--- a/src/ck_cross.h
++++ b/src/ck_cross.h
+@@ -83,6 +83,11 @@ extern CK_Log_Message_Class_T ck_cross_logLevel;
+ 
+ // Used for debugging
+ void CK_PRINTF_FORMAT(2, 3) CK_Cross_LogMessage(CK_Log_Message_Class_T msgClass, const char *format, ...);
++#ifdef ARV_TANG
++// Errors only: the other messages (and their text) are compiled out
++#define CK_Cross_LogMessage(msgClass, ...) \
++	do { if ((msgClass) >= CK_LOG_MSG_ERROR) (CK_Cross_LogMessage)((msgClass), __VA_ARGS__); } while (0)
++#endif
+ 
+ // Emulates the functionality of the "puts" function in text mode
+ void CK_Cross_puts(const char *str);
+diff --git a/src/ck_def.h b/src/ck_def.h
+index 9a1c956..5bda589 100644
+--- a/src/ck_def.h
++++ b/src/ck_def.h
+@@ -329,6 +329,10 @@ typedef struct CK_action
+ 	uint16_t compatDosPointer;
+ } CK_action;
+ 
++#ifdef ARV_LINKED_VARS
++extern const CK_action ck_actions[]; // keen4_vars.c (tools/gen_vars.py)
++#endif
++
+ typedef enum CK_objActive
+ {
+ 	OBJ_INACTIVE = 0,
+diff --git a/src/ck_game.c b/src/ck_game.c
+index 4eb2854..a76c53c 100644
+--- a/src/ck_game.c
++++ b/src/ck_game.c
+@@ -867,6 +867,7 @@ extern CK_Difficulty ck_startingDifficulty;
+ bool CK6_CreatureQuestion();
+ void CK_GameLoop()
+ {
++#ifndef ARV_TANG // Keen 6's copy protection
+ 	if (!ck_storeDemo)
+ 	{
+ 		if (!CK6_CreatureQuestion())
+@@ -876,6 +877,7 @@ void CK_GameLoop()
+ 			return;
+ 		}
+ 	}
++#endif
+ 
+ 	do
+ 	{
+diff --git a/src/ck_main.c b/src/ck_main.c
+index be87e73..d281231 100644
+--- a/src/ck_main.c
++++ b/src/ck_main.c
+@@ -176,8 +176,10 @@ void CK_InitGame()
+ 	VL_Present();
+ 
+ 	// Create a surface for the dropdown menu
++#ifndef ARV_TANG // on the Tang only while the status window is shown (CK_ShowStatusWindow)
+ 	ck_statusSurface = VL_CreateSurface(RF_BUFFER_WIDTH_PIXELS, STATUS_H + 16 + 16);
+ 	ck_backupSurface = VL_CreateSurface(RF_BUFFER_WIDTH_PIXELS, RF_BUFFER_HEIGHT_PIXELS);
++#endif
+ }
+ 
+ /*
+@@ -235,18 +237,24 @@ void CK_DemoLoop()
+ 		case 0: // Terminator scroller and Title Screen
+ 			// If no pixel panning capability
+ 			// Then the terminator screen isn't shown
++#ifdef ARV_TANG // the scroller's 1264 x 200 screen (126 KB at 4 bpp) does not fit
++			CK_ShowTitleScreen();
++#else
+ 			if (vl_noPan)
+ 				CK_ShowTitleScreen();
+ 			else
+ 				CK_DrawTerminator();
++#endif
+ #if 1					     //DEMO_LOOP_ENABLED
+ 			break;
+ 		case 1:
+ 			CK_PlayDemo(0);
+ 			break;
+ 		case 2:
+-			// Star Wars story text
++			// Star Wars story text (on the Tang: its 336 x 1024 surface, 172 KB at 4 bpp, does not fit)
++#ifndef ARV_TANG
+ 			CK_DrawStarWars();
++#endif
+ 			break;
+ 		case 3:
+ 			CK_PlayDemo(1);
+@@ -668,6 +676,19 @@ int main(int argc, char *argv[])
+ 	if (!ck_episodeFile)
+ 		Quit("No episode found! Make sure the game files are present, and run with /EPISODE <EPISODE.CKx>");
+ 	CK_VAR_LoadVars(ck_episodeFile);
++#if defined(ARV_TANG) && !defined(ARV_LINKED_VARS)
++	{
++		extern ID_MM_Arena *ck_varArena;
++		void arv_mem_report(const char *where);
++		MM_ArenaTrim(ck_varArena);
++		arv_mem_report("scripts");
++#ifdef ARV_DUMP_VARS
++		void CK_VAR_Dump(void);
++		CK_VAR_Dump();
++		Quit(0);
++#endif
++	}
++#endif
+ 
+ 	// Determine the base episode number
+ 	int episodeNumber = CK_INT(ck_episodeNumber, -1);
+@@ -775,6 +796,12 @@ int main(int argc, char *argv[])
+ 	if (us_noWait || us_tedLevel || CFG_GetConfigBool("debugActive", false))
+ 		ck_debugActive = true;
+ 
++#ifdef ARV_TANG
++	{
++		void arv_mem_report(const char *where);
++		arv_mem_report("init");
++	}
++#endif
+ 	// Draw the ANSI "Press Key When Ready Screen" here
+ 	CK_DemoLoop();
+ 	CK_ShutdownID();
+diff --git a/src/ck_map.c b/src/ck_map.c
+index 09f4ec8..dc8fc8b 100644
+--- a/src/ck_map.c
++++ b/src/ck_map.c
+@@ -17,6 +17,9 @@ along with this program; if not, write to the Free Software
+ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+  */
+ 
++#ifdef ARV_TANG
++#include "tang.h"
++#endif
+ #include "id_ca.h"
+ #include "id_in.h"
+ #include "id_rf.h"
+@@ -96,6 +99,12 @@ void CK_DemoSign(CK_object *demo)
+ void CK_ScoreBoxDrawTile8(int tilenum, uint8_t *dest, int destWidth, int planeSize)
+ {
+ 	uint8_t *src = (uint8_t *)CA_GetGrChunk(ca_gfxInfoE.offTiles8, 0, "ScoreBox", true) + 32 * tilenum;
++#ifdef ARV_TANG
++	// dest is an offset from the start of the data (the sprite is 4 bpp)
++	int offset = (int)(uintptr_t)dest - planeSize;
++	gc_scorebox_tile8(CK_CHUNKNUM(SPR_SCOREBOX) - ca_gfxInfoE.offSprites, src, offset % destWidth, offset / destWidth);
++	return;
++#endif
+ 
+ 	// Copy the tile to the target bitmap
+ 	for (int plane = 0; plane < 4; plane++, dest += planeSize)
+@@ -141,8 +150,13 @@ void CK_UpdateScoreBox(CK_object *scorebox)
+ 
+ 		// Start drawing the tiles after the mask plane,
+ 		// and four rows from the top
++#ifdef ARV_TANG
++		dest = 0;
++		dest += (planeSize = box.width * box.height);
++#else
+ 		dest = spr->data;
+ 		dest += (planeSize = spr->sprShiftByteWidths[0] * box.height);
++#endif
+ 		dest += box.width * 4 + 1;
+ 
+ 		snprintf(buf, sizeof(buf), "%d", (int)ck_gameState.keenScore);
+@@ -174,7 +188,11 @@ void CK_UpdateScoreBox(CK_object *scorebox)
+ 
+ 		// Start drawing the tiles after the mask plane,
+ 		// and 12 rows from the top
++#ifdef ARV_TANG
++		dest = 0;
++#else
+ 		dest = spr->data;
++#endif
+ 		dest += (planeSize = box.width * box.height);
+ 		dest += box.width * 20 + 8;
+ 
+@@ -211,7 +229,11 @@ void CK_UpdateScoreBox(CK_object *scorebox)
+ 
+ 		// Start drawing the tiles after the mask plane,
+ 		// and 12 rows from the top
++#ifdef ARV_TANG
++		dest = 0;
++#else
+ 		dest = spr->data;
++#endif
+ 		dest += (planeSize = box.width * box.height);
+ 		dest += box.width * 20 + 3;
+ 
+@@ -248,9 +270,11 @@ void CK_UpdateScoreBox(CK_object *scorebox)
+ 
+ 	if (updated)
+ 	{
++#ifndef ARV_TANG
+ 		CAL_ShiftSprite(spr->data, &spr->data[spr->sprShiftOffset[1]], box.width, box.height, 2);
+ 		CAL_ShiftSprite(spr->data, &spr->data[spr->sprShiftOffset[2]], box.width, box.height, 4);
+ 		CAL_ShiftSprite(spr->data, &spr->data[spr->sprShiftOffset[3]], box.width, box.height, 6);
++#endif
+ 		RF_AddSpriteDraw(&scorebox->sde, scorebox->posX + 0x40, scorebox->posY + 0x40, CK_CHUNKNUM(SPR_SCOREBOX), false, 3);
+ 	}
+ }
+diff --git a/src/ck_phys.c b/src/ck_phys.c
+index 77feb93..63a9938 100644
+--- a/src/ck_phys.c
++++ b/src/ck_phys.c
+@@ -28,6 +28,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ #include <stdio.h>
+ #include <stdlib.h> /* For abs() */
+ 
++#ifdef ARV_LINKED_VARS
++static bool ck_physNoStick; // CK_PhysPushY: the update without sticking to the ground
++#endif
++
+ static int16_t ck_physSlopeHeight[8][16] = {
+ 	{0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100, 0x100},
+ 	{0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000},
+@@ -365,7 +369,11 @@ void CK_PhysUpdateNormalObj(CK_object *obj)
+ 	oldUnitX = obj->posX;
+ 	oldUnitY = obj->posY;
+ 
++#ifdef ARV_LINKED_VARS
++	if (obj->currentAction->stickToGround && !ck_physNoStick) //unknown1)
++#else
+ 	if (obj->currentAction->stickToGround) //unknown1)
++#endif
+ 	{
+ 		// If the object is resting on a platform
+ 		if (obj->topTI == 0x19)
+@@ -702,10 +710,17 @@ void CK_PhysPushY(CK_object *pushee, CK_object *pusher)
+ 			ck_keenState.platform = pusher;
+ 
+ 		ck_nextY = -deltaClipY;
++#ifdef ARV_LINKED_VARS
++		// The actions are constant on the Tang: the update told not to stick instead
++		ck_physNoStick = true;
++		CK_PhysUpdateNormalObj(pushee);
++		ck_physNoStick = false;
++#else
+ 		bool pusheeSticksToGround = pushee->currentAction->stickToGround;
+ 		pushee->currentAction->stickToGround = false;
+ 		CK_PhysUpdateNormalObj(pushee);
+ 		pushee->currentAction->stickToGround = pusheeSticksToGround;
++#endif
+ 
+ 		if (!pushee->bottomTI)
+ 			pushee->topTI = 0x19; // Platform?
+diff --git a/src/ck_play.c b/src/ck_play.c
+index 32b4d8b..533fbfb 100644
+--- a/src/ck_play.c
++++ b/src/ck_play.c
+@@ -18,6 +18,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+  */
+ 
+ //#inclucd "id_heads.h"
++#ifdef ARV_TANG
++#include "tang.h"
++#endif
+ #include "ck_play.h"
+ #include "id_ca.h"
+ #include "id_fs.h"
+@@ -1269,11 +1272,13 @@ void CK_CheckKeys()
+ 	// Debug Keys
+ 	if (IN_GetKeyState(IN_SC_F10))
+ 	{
++#ifndef ARV_TANG // no debug keys on the Tang
+ 		if (ck_debugActive && CK_DebugKeys())
+ 		{
+ 			RF_ForceRefresh();
+ 			SD_SetLastTimeCount(SD_GetTimeCount());
+ 		}
++#endif
+ 	}
+ 
+ 	if (ck_storeDemo && IN_GetKeyState(IN_SC_Control) && IN_GetLastScan() == IN_SC_S)
+@@ -1431,6 +1436,11 @@ void StartMusic(int16_t level)
+ 
+ 	if ((song == -1) || (SD_GetMusicMode() != smm_AdLib))
+ 		return;
++#ifdef ARV_TANG
++	// The song rendered offline, streamed from the card (audio.c)
++	arv_music_start(song);
++	return;
++#endif
+ 	MM_BombOnError(false);
+ 	CA_CacheAudioChunk(ca_audInfoE.startMusic + song);
+ 	MM_BombOnError(true);
+@@ -1862,6 +1872,10 @@ void CK_ShowStatusWindow(void)
+ 	// Omnispeak: make a surface and set it as the screen, temporarily,
+ 	// in order to use the VH_ functions for drawing
+ 	void *screen = vl_emuegavgaadapter.screen;
++#ifdef ARV_TANG
++	ck_statusSurface = VL_CreateSurface(RF_BUFFER_WIDTH_PIXELS, STATUS_H + 16 + 16);
++	ck_backupSurface = VL_CreateSurface(RF_BUFFER_WIDTH_PIXELS, RF_BUFFER_HEIGHT_PIXELS);
++#endif
+ 	VL_SurfaceToSurface(screen, ck_statusSurface, 0, 0, 0, 0, RF_BUFFER_WIDTH_PIXELS, STATUS_H + 16);
+ 	// And save a copy of the screen as-is to a backup surface as well.
+ 	VL_SurfaceToSurface(screen, ck_backupSurface, 0, 0, 0, 0, RF_BUFFER_WIDTH_PIXELS, RF_BUFFER_HEIGHT_PIXELS);
+@@ -1917,6 +1931,11 @@ void CK_ShowStatusWindow(void)
+ 	} while (1);
+ 
+ 	RF_SetDrawFunc(NULL);
++#ifdef ARV_TANG
++	VL_DestroySurface(ck_backupSurface);
++	VL_DestroySurface(ck_statusSurface);
++	ck_backupSurface = ck_statusSurface = NULL;
++#endif
+ 
+ 	ck_scoreBoxObj->posX = 0;
+ }
+diff --git a/src/id_ca.c b/src/id_ca.c
+index d43f6a9..cd1055f 100644
+--- a/src/id_ca.c
++++ b/src/id_ca.c
+@@ -25,6 +25,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ // NOTE: At the moment this is not endian-independent.
+ 
+ #include "id_ca.h"
++#ifdef ARV_TANG
++#include "tang.h"
++#endif
+ #include "id_fs.h"
+ #include "id_mm.h"
+ #include "id_us.h"
+@@ -34,6 +37,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ #include "ck_ep.h"
+ 
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #define CA_THREEBYTEHEADERS
+@@ -45,7 +49,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ #include <unistd.h>
+ #endif
+ 
+-#ifndef _WIN32
++#ifdef ARV_TANG
++// Files through FatFs (fs_tang.c): no directory scan
++#elif !defined(_WIN32)
+ #include <dirent.h>
+ #include <sys/stat.h>
+ 
+@@ -530,9 +536,31 @@ int ca_graphHeadSize;
+ // Size of the ?GAGRAPH file (in bytes)
+ int ca_graphFileSize;
+ 
++#ifdef ARV_TANG
++// The offsets and lengths of the chunks the tile and sprite cache does not
++// serve (about 150 of Keen 4's 4752), in the SRAM; EGAHEAD is freed
++static uint32_t *ca_grStart, *ca_grComp;
++
++static int CAL_GrSlot(int chunk)
++{
++	int slot = chunk;
++	if (chunk >= ca_gfxInfoE.offSprites + ca_gfxInfoE.numSprites)
++		slot -= ca_gfxInfoE.numSprites;
++	if (chunk >= ca_gfxInfoE.offTiles16 + ca_gfxInfoE.numTiles16)
++		slot -= ca_gfxInfoE.numTiles16;
++	if (chunk >= ca_gfxInfoE.offTiles16m + ca_gfxInfoE.numTiles16m)
++		slot -= ca_gfxInfoE.numTiles16m;
++	return slot;
++}
++#endif
++
+ //Get the offset of a (compressed) chunk in the ?GAGRAPH file.
+ long CAL_GetGrChunkStart(int chunk)
+ {
++#ifdef ARV_TANG
++	if (ca_grStart)
++		return gc_cached(chunk) ? -1 : (long)ca_grStart[CAL_GrSlot(chunk)];
++#endif
+ 	int offset = chunk * 3;
+ 	if (offset >= ca_graphHeadSize)
+ 		return -1;
+@@ -584,6 +612,10 @@ int CAL_GetGrChunkExpLength(int chunk)
+ 
+ int CAL_GetGrChunkCompLength(int chunk)
+ {
++#ifdef ARV_TANG
++	if (ca_grStart)
++		return gc_cached(chunk) ? 0 : (int)ca_grComp[CAL_GrSlot(chunk)];
++#endif
+ 	int nextChunk = chunk + 1;
+ 	int sizeOffset = 0;
+ 	if (chunk < ca_gfxInfoE.offTiles8 && chunk >= ca_gfxInfoE.offBinaries)
+@@ -751,6 +783,24 @@ void CAL_SetupGrFile()
+ 	// Find the size of the file. Some mods do not have the last entry in the ?GAHEAD,
+ 	// so we compute it like so.
+ 	ca_graphFileSize = FS_GetFileSize(ca_graphHandle);
++#ifdef ARV_TANG
++	{
++		const int n = ca_graphHeadSize / 3;
++		const int kept = n - ca_gfxInfoE.numSprites - ca_gfxInfoE.numTiles16 - ca_gfxInfoE.numTiles16m;
++		uint32_t *start = (uint32_t *)malloc(kept * 4), *comp = (uint32_t *)malloc(kept * 4);
++		if (!start || !comp)
++			Quit("CAL_SetupGrFile: out of SRAM");
++		for (int c = 0; c < n; c++)
++			if (!gc_cached(c))
++			{
++				start[CAL_GrSlot(c)] = (uint32_t)CAL_GetGrChunkStart(c);
++				comp[CAL_GrSlot(c)] = (uint32_t)CAL_GetGrChunkCompLength(c);
++			}
++		ca_grStart = start;
++		ca_grComp = comp;
++		MM_FreePtr(&ca_graphStarts);
++	}
++#endif
+ 
+ 	// Read in the graphics headers (from TED's GFXINFOE)
+ 	// For some reason, keen decompresses these differently, not
+@@ -765,6 +815,9 @@ void CAL_SetupGrFile()
+ 	CA_LockGrChunk(ca_gfxInfoE.hdrBitmaps);
+ 	CA_LockGrChunk(ca_gfxInfoE.hdrMasked);
+ 	CA_LockGrChunk(ca_gfxInfoE.hdrSprites);
++#ifdef ARV_TANG
++	gc_open();
++#endif
+ }
+ 
+ void CAL_ExpandGrChunk(int chunk, void *source, int compressedLength)
+@@ -801,6 +854,17 @@ mm_ptr_t CA_GetGrChunk(int base, int index, const char *chunkType, bool required
+ 	int chunk = base + index;
+ 	if ((chunk < 0) || (chunk >= CA_MAX_GRAPH_CHUNKS))
+ 		Quit("tried to render a graphics chunk with invalid ID");
++#ifdef ARV_TANG
++	// Tiles and sprites: the 4 bpp cache (gfxcache.c)
++	if (gc_cached(chunk))
++	{
++		if (chunk >= ca_gfxInfoE.offSprites && chunk < ca_gfxInfoE.offSprites + ca_gfxInfoE.numSprites)
++			return gc_sprite(chunk - ca_gfxInfoE.offSprites);
++		if (chunk >= ca_gfxInfoE.offTiles16m)
++			return gc_tile16m(chunk - ca_gfxInfoE.offTiles16m);
++		return gc_tile16(chunk - ca_gfxInfoE.offTiles16);
++	}
++#endif
+ 	result = ca_graphChunks[chunk];
+ 	if (!result)
+ 	{
+@@ -817,6 +881,12 @@ void CA_CacheGrChunk(int chunk)
+ {
+ 	CA_MarkGrChunk(chunk);
+ 
++#ifdef ARV_TANG
++	// Tiles and sprites are read when first drawn (gfxcache.c)
++	if (gc_cached(chunk))
++		return;
++#endif
++
+ 	//Is the chunk already loaded?
+ 	if (ca_graphChunks[chunk])
+ 	{
+@@ -939,6 +1009,10 @@ void CA_CacheMarks(const char *msg)
+ 	// and count number of chunks to cache.
+ 	for (int i = 0; i < CA_MAX_GRAPH_CHUNKS; ++i)
+ 	{
++#ifdef ARV_TANG
++		if (gc_cached(i))
++			continue;
++#endif
+ 		if (ca_graphChunkNeeded[i] & ca_levelbit)
+ 		{
+ 			if (ca_graphChunks[i])
+@@ -1106,7 +1180,22 @@ void CAL_SetupMapFile(void)
+ 	ti_tileInfo = NULL;
+ 	const char *tileInfoName = CK_FILENAME(ca_tileInfo, "TILEINFO.EXT");
+ 	if (tileInfoName)
++	{
++#ifdef ARV_TANG
++		// In the SRAM (the physics read it all the time), not the VRAM heap
++		FS_File f = FS_OpenOmniFile(tileInfoName);
++		if (f)
++		{
++			size_t n = FS_GetFileSize(f);
++			ti_tileInfo = (uint8_t *)malloc(n);
++			if (!ti_tileInfo || FS_Read(ti_tileInfo, 1, n, f) != n)
++				Quit("TILEINFO: out of SRAM");
++			FS_CloseFile(f);
++		}
++#else
+ 		CA_LoadFile(tileInfoName, (void **)(&ti_tileInfo), 0);
++#endif
++	}
+ 	if (!ti_tileInfo)
+ 	{
+ 		if (mapHeadFileSize <= sizeof(*ca_MapHead))
+@@ -1204,6 +1293,14 @@ void CA_CacheMap(int mapIndex)
+ 		}
+ 	}
+ 	ca_mapOn = mapIndex;
++#ifdef ARV_TANG
++	// The previous level's pictures may go to make room for the map (the
++	// level's CA_CacheMarks keeps what it needs)
++	CA_SetGrPurge();
++#ifdef SIMULATION
++	arv_printf("keen4: map %d\n", mapIndex);
++#endif
++#endif
+ 
+ 	//Have we loaded this map's header?
+ 	if (!CA_MapHeaders[mapIndex])
+@@ -1302,6 +1399,9 @@ void CA_CacheMap(int mapIndex)
+ // Cache a map from an Abiathar .aslev file.
+ void CA_CacheMapFromASLEV(int mapIndex, const char *fname)
+ {
++#ifdef ARV_TANG
++	Quit("ASLEV levels are not supported");
++#else
+ 	//Unload the previous map.
+ 	for (int plane = 0; plane < CA_NUMMAPPLANES; ++plane)
+ 	{
+@@ -1364,6 +1464,7 @@ void CA_CacheMapFromASLEV(int mapIndex, const char *fname)
+ 		memcpy(CA_mapPlanes[plane], (uint8_t*)decompData + planeOffset, planeSize);
+ 	}
+ 	MM_FreePtr((mm_ptr_t*)&decompData);
++#endif
+ }
+ 
+ 
+diff --git a/src/id_ca.h b/src/id_ca.h
+index 2979a3a..765088c 100644
+--- a/src/id_ca.h
++++ b/src/id_ca.h
+@@ -58,7 +58,11 @@ void CAL_RLEWExpand(void *src, void *dest, int expLength, uint16_t rletag);
+ 
+ // -- Graphics --
+ 
++#ifdef ARV_TANG
++#define CA_MAX_GRAPH_CHUNKS 4752 // Keen 4 (EGAHEAD.CK4 / 3)
++#else
+ #define CA_MAX_GRAPH_CHUNKS 8192
++#endif
+ // The GFXINFOE structure containing info about the EGAGRAPH (see TED5)
+ typedef struct ca_gfxinfo
+ {
+diff --git a/src/id_fs.h b/src/id_fs.h
+index 26e5c94..f10d94a 100644
+--- a/src/id_fs.h
++++ b/src/id_fs.h
+@@ -28,7 +28,11 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ #include <stdbool.h>
+ #include <stdio.h>
+ 
++#ifdef ARV_TANG
++typedef struct arv_file *FS_File; // FatFs (fs_tang.c)
++#else
+ typedef FILE *FS_File;
++#endif
+ 
+ bool FS_IsFileValid(FS_File file);
+ 
+diff --git a/src/id_mm.h b/src/id_mm.h
+index 0e490b9..6dbc9d2 100644
+--- a/src/id_mm.h
++++ b/src/id_mm.h
+@@ -59,6 +59,9 @@ void *MM_ArenaAlloc(ID_MM_Arena *arena, size_t size);
+ void *MM_ArenaAllocAligned(ID_MM_Arena *arena, size_t size, size_t alignment);
+ char *MM_ArenaStrDup(ID_MM_Arena *arena, const char *str);
+ void MM_ArenaReset(ID_MM_Arena *arena);
++#ifdef ARV_TANG
++void MM_ArenaTrim(ID_MM_Arena *arena); // give the unused end back (mm_tang.c)
++#endif
+ void MM_ArenaDestroy(ID_MM_Arena *arena);
+ 
+ #endif
+diff --git a/src/id_rf.c b/src/id_rf.c
+index 58b4b54..8eed286 100644
+--- a/src/id_rf.c
++++ b/src/id_rf.c
+@@ -19,6 +19,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ 
+ //TODO: id_heads.h
+ #include "id_rf.h"
++#ifdef ARV_TANG
++#include "tang.h"
++#endif
+ #include "id_ca.h"
+ #include "id_mm.h"
+ #include "id_ti.h"
+@@ -666,14 +669,22 @@ void RF_RenderTile16(int x, int y, int tile)
+ 	if (!src)
+ 		return;
+ 
++#ifdef ARV_TANG
++	VL_Tang_Tile(src, rf_tileBuffer, x * 16, y * 16);
++#else
+ 	VL_UnmaskedToSurface(src, rf_tileBuffer, x * 16, y * 16, 16, 16);
++#endif
+ }
+ 
+ void RF_RenderTile16m(int x, int y, int tile)
+ {
+ 	if (!tile)
+ 		return;
++#ifdef ARV_TANG
++	VL_Tang_MaskedTile(gc_tile16m(tile), rf_tileBuffer, x * 16, y * 16);
++#else
+ 	VL_MaskedBlitToSurface(CA_GetGrChunk(ca_gfxInfoE.offTiles16m, tile, "Tile16m", true), rf_tileBuffer, x * 16, y * 16, 16, 16);
++#endif
+ }
+ 
+ void RF_ForceRefresh(void)
+@@ -798,8 +809,12 @@ void RFL_RenderForeTiles()
+ 				continue;
+ 			if (!(TI_ForeMisc(tile) & 0x80))
+ 				continue;
++#ifdef ARV_TANG
++			VL_Tang_MaskedTile(gc_tile16m(tile), 0, RF_TileToPixel(stx - scrollXtile), RF_TileToPixel(sty - scrollYtile));
++#else
+ 			VL_MaskedBlitToScreen(CA_GetGrChunk(ca_gfxInfoE.offTiles16m, tile, "Tile16m", true),
+ 				RF_TileToPixel(stx - scrollXtile), RF_TileToPixel(sty - scrollYtile), 16, 16);
++#endif
+ 		}
+ 	}
+ }
+@@ -1294,7 +1309,9 @@ void RF_AddSpriteDraw(RF_SpriteDrawEntry **drawEntry, int unitX, int unitY, int
+ 	if (!CA_GetGrChunk(ca_gfxInfoE.offSprites, sprite_number, "Sprite", false))
+ 		Quit("RF_AddSpriteDraw: Placed an uncached sprite");
+ 
++#ifndef ARV_TANG
+ 	VH_ShiftedSprite *shifted = VH_GetShiftedSprite(chunk);
++#endif
+ 	VH_SpriteTableEntry ste = VH_GetSpriteTableEntry(sprite_number);
+ 
+ 	int unshiftedX = RF_UnitToPixel(unitX + ste.originX);
+@@ -1306,9 +1323,17 @@ void RF_AddSpriteDraw(RF_SpriteDrawEntry **drawEntry, int unitX, int unitY, int
+ 
+ 	sde->chunk = chunk;
+ 	sde->zLayer = zLayer;
++#ifdef ARV_TANG
++	// The GPU draws at any x: the sprite where the EGA's shifted copy shows it
++	sde->x = unshiftedX & (vl_noPan ? ~7 : ~1);
++	sde->y = RF_UnitToPixel(unitY + ste.originY);
++	sde->sw = ste.width * 8;
++	shift = 0;
++#else
+ 	sde->x = unshiftedX & ~7;
+ 	sde->y = RF_UnitToPixel(unitY + ste.originY);
+ 	sde->sw = VH_GetShiftedSpriteWidth(shifted, shift);
++#endif
+ 	sde->sh = ste.height;
+ 	sde->maskOnly = allWhite;
+ 	sde->updateCount = VL_GetNumBuffers();
+diff --git a/src/id_sd.c b/src/id_sd.c
+index ba85f43..e55d077 100644
+--- a/src/id_sd.c
++++ b/src/id_sd.c
+@@ -74,8 +74,15 @@ static volatile uint16_t sd_SpriteSync = 0;
+ // NOT initialized to 0 since this can lead to division by zero on startup.
+ static int16_t sd_scaledPITTimerDivisor = 1;
+ 
++#ifdef ARV_TANG
++#include "tang.h"
++#endif
++
+ uint32_t SD_GetTimeCount()
+ {
++#ifdef ARV_TANG
++	SD_Tang_Poll();
++#endif
+ 	return sd_timeCount;
+ }
+ 
+@@ -437,6 +444,12 @@ bool SD_SetSoundMode(SD_SoundMode mode)
+ {
+ 	bool soundAvailable = false;
+ 	int16_t sfxChunkOffset = 0;
++#ifdef ARV_TANG
++	// No OPL on the Tang: the PC speaker versions of the effects (tools/make_sounds
++	// renders the AdLib songs, not the effects)
++	if (mode == sdm_AdLib)
++		mode = sdm_PC;
++#endif
+ 	SD_StopSound();
+ 	switch (mode)
+ 	{
+@@ -695,6 +708,9 @@ void SD_WaitSoundDone(void)
+ // Start playing the current music track.
+ void SD_MusicOn(void)
+ {
++#ifdef ARV_TANG
++	arv_music_pause(false);
++#endif
+ 	if (!sd_backend)
+ 		return;
+ 	sd_backend->lock();
+@@ -705,6 +721,9 @@ void SD_MusicOn(void)
+ // Stop playing the current music track.
+ void SD_MusicOff(void)
+ {
++#ifdef ARV_TANG
++	arv_music_pause(true);
++#endif
+ 	if (!sd_backend)
+ 		return;
+ 	sd_backend->lock();
+diff --git a/src/id_str.h b/src/id_str.h
+index 8a23c05..b34018d 100644
+--- a/src/id_str.h
++++ b/src/id_str.h
+@@ -53,7 +53,11 @@ void *STR_GetNextEntry(STR_Table *tabl, size_t *index);
+ // Gets the index where "str" either exists, or should be inserted.
+ size_t STR_GetEntryIndex(STR_Table *tabl, const char *str);
+ 
++#ifdef ARV_TANG // Keen 4's longest token is under 80 characters; the parser keeps several on an 8 KB stack
++#define ID_STR_MAX_TOKEN_LENGTH 128
++#else
+ #define ID_STR_MAX_TOKEN_LENGTH 1024
++#endif
+ #define ID_STR_INVALID_INDEX ((size_t)-1)
+ 
+ typedef enum STR_TokenType
+diff --git a/src/id_us_1.c b/src/id_us_1.c
+index 0ebec52..661df3c 100644
+--- a/src/id_us_1.c
++++ b/src/id_us_1.c
+@@ -632,7 +632,12 @@ void US_InitRndT(bool randomize)
+ {
+ 	if (randomize)
+ 	{
++#ifdef ARV_TANG
++		extern uint32_t arv_mtime(void);
++		us_randomIndex = arv_mtime() & 0xFF;
++#else
+ 		us_randomIndex = time(0) & 0xFF;
++#endif
+ 	}
+ 	else
+ 	{
+diff --git a/src/id_us_2.c b/src/id_us_2.c
+index 2386729..0c60724 100644
+--- a/src/id_us_2.c
++++ b/src/id_us_2.c
+@@ -877,11 +877,13 @@ void USL_BeginCards()
+ 
+ 	// NOTE: I'm caching more stuff here than is necessary
+ 
++#ifndef ARV_TANG // on the Tang the menu's pictures are read when drawn (no room for all)
+ 	// Cache all bitmaps
+ 	for (int i = ca_gfxInfoE.offBitmaps; i < (ca_gfxInfoE.offBitmaps + ca_gfxInfoE.numBitmaps); ++i)
+ 	{
+ 		CA_CacheGrChunk(i);
+ 	}
++#endif
+ 
+ 	// Cache the font
+ 	CA_CacheGrChunk(CK_CHUNKNUM(FON_WATCHFONT));
+diff --git a/src/id_vh.c b/src/id_vh.c
+index 164e58d..35d9287 100644
+--- a/src/id_vh.c
++++ b/src/id_vh.c
+@@ -22,6 +22,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ #include "id_mm.h"
+ #include "id_rf.h"
+ #include "id_vl.h"
++#ifdef ARV_TANG
++#include "tang.h"
++#endif
+ 
+ //TODO: Should these functions cache the bitmap tables?
+ VH_BitmapTableEntry VH_GetBitmapTableEntry(int bitmapNumber)
+@@ -119,11 +122,19 @@ void VH_DrawTile8M(int x, int y, int tile)
+ 
+ void VH_DrawTile16(int x, int y, int tile)
+ {
++#ifdef ARV_TANG
++	VL_Tang_Tile(gc_tile16(tile), 0, x, y);
++	return;
++#endif
+ 	VL_UnmaskedToScreen(CA_GetGrChunk(ca_gfxInfoE.offTiles16, tile, "Tile16", true), x, y, 16, 16);
+ }
+ 
+ void VH_DrawTile16M(int x, int y, int tile)
+ {
++#ifdef ARV_TANG
++	VL_Tang_MaskedTile(gc_tile16m(tile), 0, x, y);
++	return;
++#endif
+ 	if (!ca_graphChunks[ca_gfxInfoE.offTiles16m + tile])
+ 		return;
+ 	VL_MaskedBlitToScreen(ca_graphChunks[ca_gfxInfoE.offTiles16m + tile], x, y, 16, 16);
+@@ -149,6 +160,10 @@ void VH_DrawMaskedBitmap(int x, int y, int chunk)
+ 
+ void VH_DrawSprite(int x, int y, int chunk)
+ {
++#ifdef ARV_TANG
++	VL_Tang_DrawSprite(x, y, chunk - ca_gfxInfoE.offSprites, -1);
++	return;
++#endif
+ 	int spriteNumber = chunk - ca_gfxInfoE.offSprites;
+ 
+ 	VH_SpriteTableEntry spr = VH_GetSpriteTableEntry(spriteNumber);
+@@ -166,6 +181,10 @@ void VH_DrawSprite(int x, int y, int chunk)
+ 
+ void VH_DrawSpriteMask(int x, int y, int chunk, int colour)
+ {
++#ifdef ARV_TANG
++	VL_Tang_DrawSprite(x, y, chunk - ca_gfxInfoE.offSprites, colour);
++	return;
++#endif
+ 	int spriteNumber = chunk - ca_gfxInfoE.offSprites;
+ 
+ 	VH_SpriteTableEntry spr = VH_GetSpriteTableEntry(spriteNumber);
+@@ -183,6 +202,10 @@ void VH_DrawSpriteMask(int x, int y, int chunk, int colour)
+ 
+ void VH_DrawShiftedSprite(int x, int y, int chunk, int shift)
+ {
++#ifdef ARV_TANG
++	VL_Tang_DrawSprite(x, y, chunk - ca_gfxInfoE.offSprites, -1);
++	return;
++#endif
+ 	int spriteNumber = chunk - ca_gfxInfoE.offSprites;
+ 
+ 	VH_SpriteTableEntry spr = VH_GetSpriteTableEntry(spriteNumber);
+@@ -198,6 +221,10 @@ void VH_DrawShiftedSprite(int x, int y, int chunk, int shift)
+ 
+ void VH_DrawShiftedSpriteMask(int x, int y, int chunk, int shift, int colour)
+ {
++#ifdef ARV_TANG
++	VL_Tang_DrawSprite(x, y, chunk - ca_gfxInfoE.offSprites, colour);
++	return;
++#endif
+ 	int spriteNumber = chunk - ca_gfxInfoE.offSprites;
+ 
+ 	VH_SpriteTableEntry spr = VH_GetSpriteTableEntry(spriteNumber);
+@@ -313,6 +340,13 @@ void VHB_DrawSprite(int x, int y, int chunk)
+ 
+ 	VH_SpriteTableEntry spr = VH_GetSpriteTableEntry(spriteNumber);
+ 
++#ifdef ARV_TANG
++	int tangX = (x + RF_UnitToPixel(spr.originX)) & ~1;
++	int tangY = y + RF_UnitToPixel(spr.originY);
++	if (VH_MarkUpdateBlock(tangX, tangY, tangX + spr.width * 8, tangY + spr.height))
++		VL_Tang_DrawSprite(tangX, tangY, spriteNumber, -1);
++	return;
++#endif
+ 	VH_ShiftedSprite *shifted = (VH_ShiftedSprite *)CA_GetGrChunk(chunk, 0, "Sprite", true);
+ 
+ 	int shift = (x & 7) / 2;

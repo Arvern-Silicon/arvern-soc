@@ -20,7 +20,8 @@
 //----------------------------------------------------------------------------
 
 module sync_debouncer_10ms #(
-    parameter ASYNC_RST_EN = 1'b1  // Reset architecture: 1=async active-low reset (default), 0=synchronous reset
+    parameter ASYNC_RST_EN = 1'b1, // Reset architecture: 1=async active-low reset (default), 0=synchronous reset
+    parameter RST_VAL      = 1'b0  // Output value from reset until the input is first debounced (its idle level)
 ) (
 
 // OUTPUTs
@@ -65,8 +66,8 @@ wire [18:0] debounce_threshold    = 19'h7ffff;
 wire        debounce_counter_done = (debounce_counter == debounce_threshold);
 
 
-// Output signal: toggles each time the debounce window completes (resets to 0).
-arv_ipdff #(.WIDTH(1), .ARST_EN(ASYNC_RST_EN)) u_signal_debounced (
+// Output signal: toggles each time the debounce window completes (resets to RST_VAL).
+arv_ipdff #(.WIDTH(1), .RST_VAL(RST_VAL), .ARST_EN(ASYNC_RST_EN)) u_signal_debounced (
     .clk_i   (clk_50mhz),
     .rst_n_i (rst_n),
     .en_i    (debounce_counter_done),

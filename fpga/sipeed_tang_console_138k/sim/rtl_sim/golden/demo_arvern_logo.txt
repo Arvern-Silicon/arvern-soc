@@ -1,0 +1,7 @@
+# demo_arvern_logo: SHA-1 of the sync-point panel images, in order (soc_regress.py --bless)
+9e9e7eec8cbbb92db1be374ee4aa55412d6c9662  fb_8.hex
+0288174bd3ff0beda302f171b84e7b363de7d151  fb_19.hex
+08859c9761c1760b6548e7a4e134d417dfb16f81  fb_31.hex
+9e9e7eec8cbbb92db1be374ee4aa55412d6c9662  fb_47.hex
+30540c538175eb62d954a5e54080a52aab83974b  fb_62.hex
+70a7bb2572af417d0cdf8ee12dd955fe46e21969  fb_87.hex

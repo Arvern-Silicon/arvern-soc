@@ -1,0 +1,1 @@
+../../../software/apps/zork/sim/zork.v

@@ -16,12 +16,13 @@
 module  ahb_decoder #(
     parameter             ROM_SIZE     = 8*1024,                // Size of the memory instance (in Bytes)
     parameter             SRAM_X_SIZE  = 8*1024,                // Size of the memory instance (in Bytes)
-    parameter             SRAM_NX_SIZE = 8*1024                 // Size of the memory instance (in Bytes)
+    parameter             SRAM_NX_SIZE = 8*1024,                // Size of the memory instance (in Bytes)
+    parameter             VRAM_SIZE    = 8*1024                 // Size of the Belenos VRAM window (in Bytes)
 ) (
 
 // DECODER INTERFACES
     input  wire    [31:0] decoder_addr_i,
-    output wire     [6:0] decoder_1hot_o
+    output wire     [8:0] decoder_1hot_o
 );
 
 
@@ -36,6 +37,8 @@ assign decoder_1hot_o[3]  = (decoder_addr_i>=32'h10040000) & (decoder_addr_i<(32
 assign decoder_1hot_o[4]  = (decoder_addr_i>=32'h10041000) & (decoder_addr_i<(32'h10041080             )); //   128B AHB PERIPH #1
 assign decoder_1hot_o[5]  = (decoder_addr_i>=32'h10042000) & (decoder_addr_i<(32'h10042080             )); //   128B AHB PERIPH #2
 assign decoder_1hot_o[6]  = (decoder_addr_i>=32'h02000000) & (decoder_addr_i<(32'h02010000             )); //   64KB ACLINT (MSWI/MTIMER/SSWI)
+assign decoder_1hot_o[7]  = (decoder_addr_i>=32'h10043000) & (decoder_addr_i<(32'h10044000             )); //   4KB  Belenos registers
+assign decoder_1hot_o[8]  = (decoder_addr_i>=32'h82000000) & (decoder_addr_i<(32'h82000000+VRAM_SIZE   )); //   Belenos VRAM window
 
 
 endmodule

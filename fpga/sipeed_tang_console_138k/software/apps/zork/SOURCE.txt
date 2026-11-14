@@ -1,0 +1,5 @@
+mojozork ff7e00742a00acec8e175ddefb97520fb270df2d (github.com/icculus/mojozork, zlib)
+zork1 97b7b3d68c075dd9af7da499c3e9690ada3471fd (github.com/historicalsource/zork1, MIT)
+zork2 3da9661098809788a99cef00f00c865c6c204f96 (github.com/historicalsource/zork2, MIT)
+zork3 3ec9ed412b5f3cafe65d83c727d07db1fe4a86a8 (github.com/historicalsource/zork3, MIT)
+Modified for the Tang: opcode_call and opcode_loadw copy 16-bit words with memcpy (the core does not do unaligned loads); loadStory frees the old story before reading the new one (a restart needs one story in RAM, not two); save and restore branch to failure instead of using a missing file or halting.

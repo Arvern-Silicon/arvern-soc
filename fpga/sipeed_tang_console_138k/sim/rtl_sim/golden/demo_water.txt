@@ -1,0 +1,5 @@
+# demo_water: SHA-1 of the sync-point panel images, in order (soc_regress.py --bless)
+97ad4ac851174397d6ba1561221f987e19eead26  fb_8.hex
+9f3079c3d1c6318af46c11ee5a130a23a5f9daac  fb_51.hex
+06a9f9397163f8fb7ac81beb7d181c6e0826cf5c  fb_106.hex
+6a2c6424d5295897683e67a8813a684717737416  fb_160.hex

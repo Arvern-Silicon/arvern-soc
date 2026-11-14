@@ -21,7 +21,7 @@ if [ $# -ne $EXPECTED_ARGS ]; then
     echo ""
     echo "ERROR          : wrong number of arguments"
     echo "USAGE          : ./0_create_bitstream.sh <test name>"
-    echo "EXAMPLE        : ./0_create_bitstream.sh    leds"
+    echo "EXAMPLE        : ./0_create_bitstream.sh    demo_leds"
     echo ""
     echo "AVAILABLE TESTS:"
     for fullfile in ../../software/apps/* ; do
@@ -67,9 +67,14 @@ echo "|  COMPILE PROGRAM: $1"
 echo " -----------------------------------------------"
 echo ""
 
+# Hardware build: EXTRA_CFLAGS is forced empty so neither the caller's environment
+# nor a previous board simulation (-DSIMULATION) can leak into the bitstream.
 cd $softdir
 make clean
-make
+if ! make EXTRA_CFLAGS= ; then
+    echo "ERROR: firmware build failed: $1"
+    exit 1
+fi
 cd ../../../synthesis/altera
 
 ###############################################################################
@@ -85,7 +90,7 @@ cd ./WORK
 
 # Generate memory file
 IHEX2MEM=../../../../../../arvern/sim/rtl_sim/bin/ihex2mem.py
-python3 $IHEX2MEM -i ../$ihexfile -o pmem.mem -b 0x20000000 -s 32768
+python3 $IHEX2MEM -i ../$ihexfile -o pmem.mem -b 0x20000000 -s 49152
 
 echo "New MEM file generated:"
 echo "                          ./WORK/pmem.mem"
@@ -101,7 +106,7 @@ echo " -----------------------------------------------"
 echo ""
 
 MEM2MIF=../scripts/mem2mif.py
-python3 $MEM2MIF -i pmem.mem -o pmem -s 2048 -n 4
+python3 $MEM2MIF -i pmem.mem -o pmem -s 2048 -n 6
 
 echo ""
 

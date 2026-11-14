@@ -1,0 +1,9 @@
+# The simulated card's image: made by sim/gen_sdimage.py
+/sim/sd_image.bin
+/sim/sd_image.mem
+# Build outputs
+*.elf
+*.ihex
+*.map
+/arv/obj/
+/arv/obj_sim/

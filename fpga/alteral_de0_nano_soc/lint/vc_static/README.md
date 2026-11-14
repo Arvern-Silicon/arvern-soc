@@ -69,7 +69,7 @@ RTL fix and a set of adjudicated waivers; the reasoning for every one is in
   port maps; and the bidirectional pad ring (`io_buf`, GPIO_1) which an
   ASIC-oriented ruleset objects to on principle. (The register decoders'
   unmapped one-hot slots were a waiver here at first; they are now sunk
-  explicitly in `ahb_periph_example.v` and this board's `ahb_led_key_sw.v`.)
+  explicitly in this board's `apb_led_key_sw.v`.)
 
 `stale=0` is the signal to protect: it means every waiver in `waivers.tcl`
 matched something. A non-zero count means a waiver has gone stale or is scoped

@@ -1,0 +1,41 @@
+`verilator_config
+
+// Gowin PLL: GowinModgen output (defparam instantiation, unused outputs) and
+// the primitive's behavioural model (full vendor parameter and port set, delays
+// computed at run time)
+lint_off -rule DEFPARAM         -file "*/gowin/sys_pll.v"
+lint_off -rule UNUSEDSIGNAL     -file "*/gowin/sys_pll.v"
+lint_off -rule DEFPARAM         -file "*/gowin/hdmi_pll.v"
+lint_off -rule UNUSEDSIGNAL     -file "*/gowin/hdmi_pll.v"
+lint_off -rule DEFPARAM         -file "*/gowin/sys_pll_lcd.v"
+lint_off -rule UNUSEDSIGNAL     -file "*/gowin/sys_pll_lcd.v"
+lint_off -rule UNUSEDPARAM      -file "*/bench/verilog/PLL.v"
+lint_off -rule UNUSEDSIGNAL     -file "*/bench/verilog/PLL.v"
+lint_off -rule ZERODLY          -file "*/bench/verilog/PLL.v"
+lint_off -rule UNUSEDPARAM      -file "*/bench/verilog/ODDR.v"
+// OSER10 behavioural model (bench): vendor parameter set, a timed process
+// tracking the word boundary
+lint_off -rule UNUSEDPARAM      -file "*/bench/verilog/OSER10.v"
+lint_off -rule BLKSEQ           -file "*/bench/verilog/OSER10.v"
+lint_off -rule PROCASSINIT      -file "*/bench/verilog/OSER10.v"
+
+// arv_cgate is the library's latch+AND integrated clock gate; the latch is
+// intentional (the structure a technology ICG cell maps onto). Kept for any build
+// that instantiates it; the current RTL does not.
+lint_off -rule LATCH            -file "*/arv_cgate.v"
+
+// cJTAG (DTM_TYPE=3) only. Two false positives from whole-vector granularity and
+// from the deliberate mixed-reset architecture:
+//
+//  * UNOPTFLAT on cjtag_tmsc_oe: the reported cycle leaves via SDRAM1[3] (TMSC
+//    output enable) and returns through the SDRAM1[4] (TCKC) input buffer, i.e.
+//    two DIFFERENT bits of the same `inout [10:1] SDRAM1` vector. Verilator's
+//    analysis is per-signal, not per-bit, so it cannot see that bit 3 never
+//    feeds bit 4. tmsc_oe_o is built only from flop outputs plus ~tckc_i, so no
+//    real combinational loop exists.
+//
+//  * SYNCASYNCNET on dbgresetn: with ASYNC_RST_EN=0 the clk_i domain uses a
+//    synchronous reset, while the TCKC domain is always asynchronous by design
+//    (the probe clock may not be running). Mixed usage is the intent.
+lint_off -rule UNOPTFLAT        -file "*/arvern_fpga.v"
+lint_off -rule SYNCASYNCNET     -file "*/arvern_fpga.v"

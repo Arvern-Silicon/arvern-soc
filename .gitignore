@@ -17,3 +17,9 @@ __pycache__/
 # CLion / CMake
 cmake-build-*/
 .idea
+
+# Local working notes
+WIP_*
+
+terasic_de25_nano/
+chip_example_e*

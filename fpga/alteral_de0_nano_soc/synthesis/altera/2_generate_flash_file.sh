@@ -27,7 +27,7 @@ if [ $# -ne $EXPECTED_ARGS ]; then
     echo ""
     echo "ERROR          : wrong number of arguments"
     echo "USAGE          : ./2_generate_flash_file.sh <bitstream name>"
-    echo "EXAMPLE        : ./2_generate_flash_file.sh    leds"
+    echo "EXAMPLE        : ./2_generate_flash_file.sh    demo_leds"
     echo ""
     echo "AVAILABLE BITSTREAMS:"
     for fullfile in ./bitstreams/*.sof ; do

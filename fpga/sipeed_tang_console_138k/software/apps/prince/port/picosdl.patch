@@ -1,0 +1,491 @@
+diff -ruN a/picosdl/include/SDL2/SDL.h b/picosdl/include/SDL2/SDL.h
+--- a/picosdl/include/SDL2/SDL.h	2026-10-29 00:12:00
++++ b/picosdl/include/SDL2/SDL.h	2026-10-29 02:02:35
+@@ -143,6 +143,19 @@
+ /* What a generated sprite carries. */
+ #define PSDL_SURF_FLASH   (PSDL_SURF_EXTERN | PSDL_SURF_CONST)
+ 
++/*
++ * A 4 bits per pixel image (the Tang build): two pixels a byte, the left one in
++ * the low nibble, pitch in bytes; 0 is transparent and a pixel v is drawn as
++ * colorkey + v (the colour key is its palette row times 16). The blitters
++ * expand it as they go; it is only ever a source.
++ */
++#define PSDL_SURF_NIBBLE  0x10000000u
++/*
++ * Pixels the client fetches on demand: the blitters call PSDL_LazyFetch(s)
++ * before reading them (it sets s->pixels).
++ */
++#define PSDL_SURF_LAZY    0x20000000u
++
+ typedef struct SDL_Surface {
+ 	Uint32           flags;
+ 	SDL_PixelFormat *format;
+@@ -160,6 +173,8 @@
+ 	Uint8            alpha_mod;
+ 	int              blend_mode;
+ } SDL_Surface;
++
++void PSDL_LazyFetch(SDL_Surface *s);
+ 
+ /*
+  * The pixel formats, as shared objects rather than a copy per surface.
+diff -ruN a/picosdl/src/psdl_blit.c b/picosdl/src/psdl_blit.c
+--- a/picosdl/src/psdl_blit.c	2026-10-29 00:12:00
++++ b/picosdl/src/psdl_blit.c	2026-10-29 02:02:35
+@@ -80,6 +80,161 @@
+ 	return (const Uint8 *)s->pixels + (size_t)y * (size_t)s->pitch + (size_t)x;
+ }
+ 
++
++/* ------------------------------------------------- 4bpp sources (NIBBLE) */
++
++#define NIB_COPY PSDL_NIB_COPY
++#define NIB_MONO PSDL_NIB_MONO
++#define NIB_XOR  PSDL_NIB_XOR
++
++static inline const SDL_Surface *src_ready(SDL_Surface *src)
++{
++	if (src->flags & PSDL_SURF_LAZY)
++		PSDL_LazyFetch(src);
++	return src;
++}
++
++/* w x h pixels from source column sx (stepping dir = +1 or -1), row sy */
++static void PSDL_HOT(blit_nib_cpu)(const SDL_Surface *src, int sx, int sy, int dir,
++                               Uint8 *dp, int dpitch, int w, int h,
++                               int mode, int keyed, Uint8 color)
++{
++	const Uint8 base = (Uint8)src->colorkey;
++	const Uint8 *sp = (const Uint8 *)src->pixels + (size_t)sy * (size_t)src->pitch;
++	for (int y = 0; y < h; ++y) {
++		int x0 = sx;
++		for (int x = 0; x < w; ++x, x0 += dir) {
++			const Uint8 b = sp[x0 >> 1];
++			const Uint8 v = (x0 & 1) ? (Uint8)(b >> 4) : (Uint8)(b & 15);
++			if (mode == NIB_COPY) {
++				if (v || !keyed)
++					dp[x] = (Uint8)(base + v);
++			} else if (mode == NIB_MONO) {
++				if (v)
++					dp[x] = color;
++			} else {
++				dp[x] ^= (Uint8)(base + v);
++			}
++		}
++		sp += src->pitch;
++		dp += dpitch;
++	}
++}
++
++/* ------------------------------------------- the GPU, or the CPU loops */
++
++/*
++ * Each operation goes to the backend's GPU when it takes it (all its pixels in
++ * GPU memory), else to the CPU loop after psdl_backend_cpu_touch() (the CPU
++ * must not touch pixels the GPU may still be drawing or reading).
++ *
++ * PSDL_GPU_CHECK (a test build): every operation the GPU takes is also done by
++ * the CPU loop on a copy of the destination (the backend's scratch, GPU memory
++ * of at least 320 x 200 bytes the game does not use meanwhile), then compared
++ * with what the GPU drew; psdl_gpu_check_n / _bad count the operations checked
++ * and those that differ, per kind (0 nibble, 1 8 bpp blit, 2 fill).
++ */
++static void blit8_cpu(const Uint8 *sp, int spitch, int sdir, Uint8 *dp, int dpitch,
++                      int w, int h, int mode, Uint8 key);
++
++#ifdef PSDL_GPU_CHECK
++Uint8 *psdl_backend_check_scratch(void);
++void   psdl_backend_gpu_sync(void);
++void   psdl_backend_log(const char *fmt, ...);
++unsigned psdl_gpu_check_n[3], psdl_gpu_check_bad[3];
++unsigned psdl_gpu_check_mode[3][8];          /* checked, per kind and mode (+4: mirrored) */
++
++/* The destination rectangle into the scratch (pitch w): the reference */
++static Uint8 *chk_pre(const Uint8 *dp, int dpitch, int w, int h)
++{
++	Uint8 *ref = psdl_backend_check_scratch();
++	psdl_backend_gpu_sync();
++	for (int y = 0; y < h; ++y)
++		memcpy(ref + (size_t)y * (size_t)w, dp + (size_t)y * (size_t)dpitch, (size_t)w);
++	return ref;
++}
++
++static void chk_post(int kind, const Uint8 *ref, const Uint8 *dp, int dpitch, int w, int h, int mode)
++{
++	psdl_backend_gpu_sync();
++	psdl_gpu_check_n[kind]++;
++	psdl_gpu_check_mode[kind][mode & 7]++;
++	for (int y = 0; y < h; ++y)
++		for (int x = 0; x < w; ++x)
++			if (ref[(size_t)y * (size_t)w + (size_t)x] != dp[(size_t)y * (size_t)dpitch + (size_t)x]) {
++				if (psdl_gpu_check_bad[kind]++ < 8)
++					psdl_backend_log("prince: gpu check kind %d mode %d %dx%d differs at (%d,%d): cpu %02x gpu %02x\n",
++					                 kind, mode, w, h, x, y, ref[(size_t)y * (size_t)w + (size_t)x],
++					                 dp[(size_t)y * (size_t)dpitch + (size_t)x]);
++				return;
++			}
++}
++#endif
++
++static void blit_nib(const SDL_Surface *src, int sx, int sy, int dir, Uint8 *dp, int dpitch,
++                     int w, int h, int mode, int keyed, Uint8 color)
++{
++#ifdef PSDL_GPU_CHECK
++	{
++		Uint8 *ref = chk_pre(dp, dpitch, w, h);
++		blit_nib_cpu(src, sx, sy, dir, ref, w, w, h, mode, keyed, color);
++		if (psdl_backend_gpu_nib(src, sx, sy, dir, dp, dpitch, w, h, mode, keyed, color)) {
++			chk_post(0, ref, dp, dpitch, w, h,
++			         (mode == NIB_COPY ? (keyed ? 0 : 3) : mode) + 4 * (dir < 0));
++			return;
++		}
++	}
++#else
++	if (psdl_backend_gpu_nib(src, sx, sy, dir, dp, dpitch, w, h, mode, keyed, color))
++		return;
++#endif
++	psdl_backend_cpu_touch(src->pixels, dp);
++	blit_nib_cpu(src, sx, sy, dir, dp, dpitch, w, h, mode, keyed, color);
++}
++
++/* An 8 bpp blit (mode PSDL_G_*): sp is the first source pixel read, sdir the
++ * source step along a row (-1: mirrored) */
++static void blit8(const Uint8 *sp, int spitch, int sdir, Uint8 *dp, int dpitch,
++                  int w, int h, int mode, Uint8 key)
++{
++#ifdef PSDL_GPU_CHECK
++	{
++		Uint8 *ref = chk_pre(dp, dpitch, w, h);
++		blit8_cpu(sp, spitch, sdir, ref, w, w, h, mode, key);
++		if (psdl_backend_gpu_blit(sp, spitch, sdir, dp, dpitch, w, h, mode, key)) {
++			chk_post(1, ref, dp, dpitch, w, h, mode + 4 * (sdir < 0));
++			return;
++		}
++	}
++#else
++	if (psdl_backend_gpu_blit(sp, spitch, sdir, dp, dpitch, w, h, mode, key))
++		return;
++#endif
++	psdl_backend_cpu_touch(sp, dp);
++	blit8_cpu(sp, spitch, sdir, dp, dpitch, w, h, mode, key);
++}
++
++static void fill8(Uint8 *dp, int dpitch, int w, int h, Uint8 v)
++{
++#ifdef PSDL_GPU_CHECK
++	{
++		Uint8 *ref = chk_pre(dp, dpitch, w, h);
++		for (int y = 0; y < h; ++y)
++			memset(ref + (size_t)y * (size_t)w, v, (size_t)w);
++		if (psdl_backend_gpu_fill(dp, dpitch, w, h, v)) {
++			chk_post(2, ref, dp, dpitch, w, h, 0);
++			return;
++		}
++	}
++#else
++	if (psdl_backend_gpu_fill(dp, dpitch, w, h, v))
++		return;
++#endif
++	psdl_backend_cpu_touch(NULL, dp);
++	for (int y = 0; y < h; ++y)
++		memset(dp + (size_t)y * (size_t)dpitch, v, (size_t)w);
++}
++
+ /* --------------------------------------------------------------- fill */
+ 
+ int SDL_FillRect(SDL_Surface *dst, const SDL_Rect *rect, Uint32 color)
+@@ -107,9 +262,7 @@
+ 	if (x1 <= x0 || y1 <= y0)
+ 		return 0;
+ 
+-	Uint8 value = (Uint8)color;
+-	for (int y = y0; y < y1; ++y)
+-		memset(row_of(dst, y, x0), value, (size_t)(x1 - x0));
++	fill8(row_of(dst, y0, x0), dst->pitch, x1 - x0, y1 - y0, (Uint8)color);
+ 	return 0;
+ }
+ 
+@@ -154,6 +307,37 @@
+ 	}
+ }
+ 
++/* The CPU loops of blit8(): the ones each entry point had */
++static void PSDL_HOT(blit8_cpu)(const Uint8 *sp, int spitch, int sdir, Uint8 *dp, int dpitch,
++                                int w, int h, int mode, Uint8 key)
++{
++	if (sdir > 0 && mode == PSDL_G_COPY) {
++		blit_rows_opaque(sp, spitch, dp, dpitch, w, h);
++		return;
++	}
++	if (sdir > 0 && mode == PSDL_G_KEYED) {
++		blit_rows_keyed(sp, spitch, dp, dpitch, w, h, key);
++		return;
++	}
++	for (int y = 0; y < h; ++y) {
++		if (mode == PSDL_G_XOR) {
++			for (int x = 0; x < w; ++x)
++				dp[x] ^= sp[x * sdir];
++		} else if (mode == PSDL_G_KEYED) {
++			for (int x = 0; x < w; ++x) {
++				Uint8 v = sp[x * sdir];
++				if (v != key)
++					dp[x] = v;
++			}
++		} else {
++			for (int x = 0; x < w; ++x)
++				dp[x] = sp[x * sdir];
++		}
++		sp += spitch;
++		dp += dpitch;
++	}
++}
++
+ int SDL_UpperBlit(SDL_Surface *src, const SDL_Rect *srcrect,
+                   SDL_Surface *dst, SDL_Rect *dstrect)
+ {
+@@ -166,13 +350,19 @@
+ 		return 0;
+ 	}
+ 
++	src_ready(src);
++	if (src->flags & PSDL_SURF_NIBBLE) {
++		blit_nib(src, s.x, s.y, 1, row_of(dst, d.y, d.x), dst->pitch, s.w, s.h, NIB_COPY,
++		         src->has_colorkey, 0);
++		if (dstrect != NULL)
++			*dstrect = d;
++		return 0;
++	}
+ 	const Uint8 *sp = crow_of(src, s.y, s.x);
+ 	Uint8       *dp = row_of(dst, d.y, d.x);
+ 
+-	if (src->has_colorkey)
+-		blit_rows_keyed(sp, src->pitch, dp, dst->pitch, s.w, s.h, (Uint8)src->colorkey);
+-	else
+-		blit_rows_opaque(sp, src->pitch, dp, dst->pitch, s.w, s.h);
++	blit8(sp, src->pitch, 1, dp, dst->pitch, s.w, s.h,
++	      src->has_colorkey ? PSDL_G_KEYED : PSDL_G_COPY, (Uint8)src->colorkey);
+ 
+ 	if (dstrect != NULL)
+ 		*dstrect = d;
+@@ -198,13 +388,19 @@
+ 		return 0;
+ 	}
+ 
++	src_ready(src);
++	if (src->flags & PSDL_SURF_NIBBLE) {
++		blit_nib(src, s.x, s.y, 1, row_of(dst, d.y, d.x), dst->pitch, s.w, s.h, NIB_COPY,
++		         transparent && src->has_colorkey, 0);
++		if (dstrect != NULL)
++			*dstrect = d;
++		return 0;
++	}
+ 	const Uint8 *sp = crow_of(src, s.y, s.x);
+ 	Uint8       *dp = row_of(dst, d.y, d.x);
+ 
+-	if (transparent && src->has_colorkey)
+-		blit_rows_keyed(sp, src->pitch, dp, dst->pitch, s.w, s.h, (Uint8)src->colorkey);
+-	else
+-		blit_rows_opaque(sp, src->pitch, dp, dst->pitch, s.w, s.h);
++	blit8(sp, src->pitch, 1, dp, dst->pitch, s.w, s.h,
++	      (transparent && src->has_colorkey) ? PSDL_G_KEYED : PSDL_G_COPY, (Uint8)src->colorkey);
+ 
+ 	if (dstrect != NULL)
+ 		*dstrect = d;
+@@ -245,6 +441,14 @@
+ 		return 0;
+ 	}
+ 
++	src_ready(src);
++	if (src->flags & PSDL_SURF_NIBBLE) {
++		blit_nib(src, s.x, s.y, 1, row_of(dst, d.y, d.x), dst->pitch, s.w, s.h, NIB_MONO, 1, color);
++		if (dstrect != NULL)
++			*dstrect = d;
++		return 0;
++	}
++	psdl_backend_cpu_touch(crow_of(src, s.y, s.x), row_of(dst, d.y, d.x));
+ 	blit_rows_mono(crow_of(src, s.y, s.x), src->pitch,
+ 	               row_of(dst, d.y, d.x), dst->pitch, s.w, s.h,
+ 	               src->has_colorkey ? (Uint8)src->colorkey : 0, color);
+@@ -267,6 +471,15 @@
+ 		return 0;
+ 	}
+ 
++	src_ready(src);
++	if (src->flags & PSDL_SURF_NIBBLE) {                /* the row already says where */
++		blit_nib(src, s.x, s.y, 1, row_of(dst, d.y, d.x), dst->pitch, s.w, s.h, NIB_COPY,
++		         src->has_colorkey, 0);
++		if (dstrect != NULL)
++			*dstrect = d;
++		return 0;
++	}
++	psdl_backend_cpu_touch(crow_of(src, s.y, s.x), row_of(dst, d.y, d.x));
+ 	blit_rows_keyed_offset(crow_of(src, s.y, s.x), src->pitch,
+ 	                       row_of(dst, d.y, d.x), dst->pitch, s.w, s.h,
+ 	                       src->has_colorkey ? (Uint8)src->colorkey : 0xFF,
+@@ -298,25 +511,16 @@
+ 	int jstart = s.x - orig.x;
+ 	int sx     = orig.x + orig.w - 1 - jstart;
+ 
+-	const Uint8 *sp = crow_of(src, s.y, sx);
+-	Uint8       *dp = row_of(dst, d.y, d.x);
+-	Uint8        key = (Uint8)src->colorkey;
+-	int          keyed = src->has_colorkey;
+-
+-	for (int y = 0; y < s.h; ++y) {
+-		if (keyed) {
+-			for (int x = 0; x < s.w; ++x) {
+-				Uint8 v = sp[-x];
+-				if (v != key)
+-					dp[x] = v;
+-			}
+-		} else {
+-			for (int x = 0; x < s.w; ++x)
+-				dp[x] = sp[-x];
+-		}
+-		sp += src->pitch;
+-		dp += dst->pitch;
++	src_ready(src);
++	if (src->flags & PSDL_SURF_NIBBLE) {
++		blit_nib(src, sx, s.y, -1, row_of(dst, d.y, d.x), dst->pitch, s.w, s.h, NIB_COPY,
++		         src->has_colorkey, 0);
++		if (dstrect != NULL)
++			*dstrect = d;
++		return 0;
+ 	}
++	blit8(crow_of(src, s.y, sx), src->pitch, -1, row_of(dst, d.y, d.x), dst->pitch, s.w, s.h,
++	      src->has_colorkey ? PSDL_G_KEYED : PSDL_G_COPY, (Uint8)src->colorkey);
+ 
+ 	if (dstrect != NULL)
+ 		*dstrect = d;
+@@ -340,14 +544,15 @@
+ 		return 0;
+ 	}
+ 
+-	const Uint8 *sp = crow_of(src, s.y, s.x);
+-	Uint8       *dp = row_of(dst, d.y, d.x);
+-	for (int y = 0; y < s.h; ++y) {
+-		for (int x = 0; x < s.w; ++x)
+-			dp[x] ^= sp[x];
+-		sp += src->pitch;
+-		dp += dst->pitch;
++	src_ready(src);
++	if (src->flags & PSDL_SURF_NIBBLE) {
++		blit_nib(src, s.x, s.y, 1, row_of(dst, d.y, d.x), dst->pitch, s.w, s.h, NIB_XOR, 0, 0);
++		if (dstrect != NULL)
++			*dstrect = d;
++		return 0;
+ 	}
++	blit8(crow_of(src, s.y, s.x), src->pitch, 1, row_of(dst, d.y, d.x), dst->pitch, s.w, s.h,
++	      PSDL_G_XOR, 0);
+ 
+ 	if (dstrect != NULL)
+ 		*dstrect = d;
+@@ -369,6 +574,7 @@
+ 	Uint8 key   = (Uint8)src->colorkey;
+ 	int   keyed = src->has_colorkey;
+ 
++	psdl_backend_cpu_touch(src->pixels, dst->pixels);
+ 	for (int y = 0; y < d.h; ++y) {
+ 		int dy = d.y + y;
+ 		if (dy < dst->clip_rect.y || dy >= dst->clip_rect.y + dst->clip_rect.h)
+diff -ruN a/picosdl/src/psdl_internal.h b/picosdl/src/psdl_internal.h
+--- a/picosdl/src/psdl_internal.h	2026-10-28 22:45:02
++++ b/picosdl/src/psdl_internal.h	2026-10-29 02:02:35
+@@ -225,6 +225,45 @@
+ int  psdl_backend_video_buffer_busy(const void *pixels);
+ void psdl_backend_palette_set(int first, int ncolors, const SDL_Color *colors);
+ 
++/*
++ * Drawing engine (PSDL_BACKEND_GPU): a backend with a GPU that reaches some of
++ * the memory draws the blits and fills whose pixels all lie there, and says so
++ * by returning 1; 0 leaves the operation to the CPU loops. The GPU runs behind
++ * the CPU, so before a CPU loop touches pixels picosdl calls
++ * psdl_backend_cpu_touch() with the source and destination pixels it is about
++ * to read or write (NULL: none): the backend waits there for the GPU when
++ * either may be GPU memory and GPU work is queued. Every result must be the
++ * CPU loop's, pixel for pixel.
++ *
++ *   gpu_nib   blit_nib()'s operation on a 4 bpp source (mode PSDL_NIB_*)
++ *   gpu_blit  an 8 bpp w x h copy from sp (the first pixel read, stepping
++ *             sdir = +1 or -1 along a row) to dp (mode PSDL_G_*; key: the
++ *             colour key of PSDL_G_KEYED)
++ *   gpu_fill  w x h of value v at dp
++ */
++enum { PSDL_NIB_COPY, PSDL_NIB_MONO, PSDL_NIB_XOR };
++enum { PSDL_G_COPY, PSDL_G_KEYED, PSDL_G_XOR };
++#ifdef PSDL_BACKEND_GPU
++int  psdl_backend_gpu_nib(const SDL_Surface *src, int sx, int sy, int dir, Uint8 *dp, int dpitch,
++                          int w, int h, int mode, int keyed, Uint8 color);
++int  psdl_backend_gpu_blit(const Uint8 *sp, int spitch, int sdir, Uint8 *dp, int dpitch,
++                           int w, int h, int mode, Uint8 key);
++int  psdl_backend_gpu_fill(Uint8 *dp, int dpitch, int w, int h, Uint8 v);
++void psdl_backend_cpu_touch(const void *src, const void *dst);
++#else
++static inline int  psdl_backend_gpu_nib(const SDL_Surface *src, int sx, int sy, int dir, Uint8 *dp,
++                                        int dpitch, int w, int h, int mode, int keyed, Uint8 color)
++{ (void)src; (void)sx; (void)sy; (void)dir; (void)dp; (void)dpitch; (void)w; (void)h;
++  (void)mode; (void)keyed; (void)color; return 0; }
++static inline int  psdl_backend_gpu_blit(const Uint8 *sp, int spitch, int sdir, Uint8 *dp, int dpitch,
++                                         int w, int h, int mode, Uint8 key)
++{ (void)sp; (void)spitch; (void)sdir; (void)dp; (void)dpitch; (void)w; (void)h; (void)mode;
++  (void)key; return 0; }
++static inline int  psdl_backend_gpu_fill(Uint8 *dp, int dpitch, int w, int h, Uint8 v)
++{ (void)dp; (void)dpitch; (void)w; (void)h; (void)v; return 0; }
++static inline void psdl_backend_cpu_touch(const void *src, const void *dst) { (void)src; (void)dst; }
++#endif
++
+ /* Input. poll() is called from SDL_PumpEvents and should push whatever it has. */
+ void psdl_backend_input_init(void);
+ void psdl_backend_input_poll(void);
+diff -ruN a/picosdl/src/psdl_surface.c b/picosdl/src/psdl_surface.c
+--- a/picosdl/src/psdl_surface.c	2026-10-28 22:45:02
++++ b/picosdl/src/psdl_surface.c	2026-10-29 02:02:35
+@@ -31,8 +31,15 @@
+ static int          s_headers_in_use;
+ static int          s_headers_high_water;
+ 
+-/* 4-byte aligned so the blitters can move whole words. */
++/* 4-byte aligned so the blitters can move whole words. A backend may place it
++ * (PSDL_ARENA_EXTERN: psdl_arena, PSDL_ARENA_BYTES long, e.g. in GPU memory so
++ * that its surfaces can be drawn by the GPU too). */
++#ifdef PSDL_ARENA_EXTERN
++extern Uint8 *const psdl_arena;
++#define s_arena psdl_arena
++#else
+ static Uint8 s_arena[PSDL_ARENA_BYTES] __attribute__((aligned(4)));
++#endif
+ static size_t s_arena_top;
+ static size_t s_arena_high_water;
+ 
+@@ -186,7 +193,12 @@
+ 	if (s_arena_top > s_arena_high_water)
+ 		s_arena_high_water = s_arena_top;
+ 
+-	memset(pixels, 0, bytes);
++	/* cleared (the GPU's fill when it reaches the arena: it may still be
++	 * reading or drawing the surface that had this space) */
++	if (!psdl_backend_gpu_fill(pixels, pitch, pitch, height, 0)) {
++		psdl_backend_cpu_touch(NULL, pixels);
++		memset(pixels, 0, bytes);
++	}
+ 
+ 	SDL_Surface *s = psdl_surface_alloc_header();
+ 	surface_finish(s, pixels, width, height, pitch, PSDL_SURF_ARENA,
+@@ -252,6 +264,8 @@
+ {
+ 	if (surface == NULL)
+ 		return -1;
++	/* the caller reads or writes the pixels itself */
++	psdl_backend_cpu_touch(surface->pixels, surface->pixels);
+ 	if (!is_const(surface))
+ 		surface->locked++;
+ 	return 0;
+@@ -274,6 +288,7 @@
+ 	SDL_Surface *dst = SDL_CreateRGBSurface(0, src->w, src->h, 8, 0, 0, 0, 0);
+ 	if (dst == NULL)
+ 		return NULL;
++	psdl_backend_cpu_touch(src->pixels, dst->pixels);
+ 	for (int y = 0; y < src->h; ++y)
+ 		memcpy((Uint8 *)dst->pixels + (size_t)y * dst->pitch,
+ 		       (const Uint8 *)src->pixels + (size_t)y * src->pitch,

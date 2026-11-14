@@ -1,0 +1,3 @@
+# build outputs (the .elf, .ihex and .size are ignored by the tree's .gitignore)
+obj/
+*.map

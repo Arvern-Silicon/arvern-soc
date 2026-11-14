@@ -23,22 +23,25 @@
 //=============================================================================
 
 arvern_fpga.v
-ahb_led_key_sw.v
+apb_led_key_sw.v
 sram_8kb_wrapper.v
 sync_debouncer_10ms.v
 ahb_bus_system.v
 ahb_arbiter.v
 ahb_decoder.v
-pmem_32kb.v
-sram_32kb.v
+pmem_48kb.v
+sram_48kb.v
 
 //=============================================================================
-// Altera megafunction wrappers (ALTIOBUF bidirectional pad buffer). The real
-// cyclonev_io_ibuf/obuf primitives are provided by Quartus at synthesis; the
-// simulation-only behavioural models live in bench/verilog/cyclonev_io.v.
+// Altera megafunction wrappers: ALTIOBUF bidirectional pad buffer and the
+// Belenos VRAM / LUT memories (altsyncram). The real cyclonev_io_ibuf/obuf and
+// altsyncram are provided by Quartus at synthesis; the simulation-only
+// behavioural models live in bench/verilog/.
 //=============================================================================
 
 mega/io_buf.v
+mega/ram_32x38400.v
+mega/ram_24x512.v
 
 //=============================================================================
 // arvern CPU core
@@ -62,14 +65,11 @@ mega/io_buf.v
 -f ../../../../../arvern-ips/ahb_interconnect/rtl/verilog/filelist.f
 
 //=============================================================================
-// AHB peripherals (SRAM controllers, LED-KEY-SW register example)
+// AHB peripherals (SRAM controllers)
 //=============================================================================
 
 +incdir+../../../../../arvern-ips/ahb_sram_controller/rtl/verilog/
 -f ../../../../../arvern-ips/ahb_sram_controller/rtl/verilog/filelist.f
-
-+incdir+../../../../../arvern-ips/ahb_periph_example/rtl/verilog/
--f ../../../../../arvern-ips/ahb_periph_example/rtl/verilog/filelist.f
 
 //=============================================================================
 // ACLINT (pulls arv_primitives: arv_ipdff + arv_synchronizer)
@@ -78,3 +78,22 @@ mega/io_buf.v
 +incdir+../../../../../arvern-ips/arv_primitives/rtl/verilog/
 +incdir+../../../../../arvern-ips/ahb_aclint/rtl/verilog/
 -f ../../../../../arvern-ips/ahb_aclint/rtl/verilog/filelist.f
+
+//=============================================================================
+// PLIC and GPIO
+//=============================================================================
+
++incdir+../../../../../arvern-ips/ahb_plic/rtl/verilog/
+-f ../../../../../arvern-ips/ahb_plic/rtl/verilog/filelist.f
+
++incdir+../../../../../arvern-ips/ahb_apb_bridge/rtl/verilog/
+-f ../../../../../arvern-ips/ahb_apb_bridge/rtl/verilog/filelist.f
++incdir+../../../../../arvern-ips/apb_gpio/rtl/verilog/
+-f ../../../../../arvern-ips/apb_gpio/rtl/verilog/filelist.f
+
+//=============================================================================
+// Belenos graphic controller (sibling repository arvern-belenos)
+//=============================================================================
+
++incdir+../../../../../arvern-belenos/rtl/verilog/
+-f ../../../../../arvern-belenos/rtl/verilog/filelist.f

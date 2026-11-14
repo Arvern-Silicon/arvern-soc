@@ -1,0 +1,431 @@
+diff -ruN a/sdlpop/common.h b/sdlpop/common.h
+--- a/sdlpop/common.h	2026-10-28 07:53:49
++++ b/sdlpop/common.h	2026-10-28 08:08:41
+@@ -59,6 +59,9 @@
+ #include "config.h"
+ #include "types.h"
+ #include "proto.h"
++#ifdef ARV_TANG
++#include "tang.h"
++#endif
+ #include "data.h"
+ 
+ #ifndef MAX
+diff -ruN a/sdlpop/seg000.c b/sdlpop/seg000.c
+--- a/sdlpop/seg000.c	2026-10-28 07:53:49
++++ b/sdlpop/seg000.c	2026-10-28 08:08:41
+@@ -1701,6 +1701,11 @@
+ 	if (chtab_ptr == NULL) return;
+ 	for (short index = min_index; index <= max_index; ++index) {
+ 		int rid = base_id + index + 1;
++#ifdef ARV_TANG
++		const SDL_Surface* surface = find_resource_surface(rid);
++		if (surface == NULL) continue;      /* not in this DAT: normal */
++		chtab_patch_image(chtab_ptr, index, surface);
++#else
+ 		const struct resource_s* r = find_resource(rid);
+ 		if (r == NULL) {
+ 			/* Not in this DAT at all. The ranges below cover both tile sets
+@@ -1713,6 +1718,7 @@
+ 			continue;
+ 		}
+ 		chtab_patch_image(chtab_ptr, index, r->surface);
++#endif
+ 	}
+ }
+ 
+diff -ruN a/sdlpop/seg006.c b/sdlpop/seg006.c
+--- a/sdlpop/seg006.c	2026-10-28 07:53:49
++++ b/sdlpop/seg006.c	2026-10-28 08:08:41
+@@ -591,7 +591,7 @@
+ 				}
+ 				// fallthrough!
+ 			case SEQ_JMP: // jump
+-				#ifdef __PSP__
++				#if defined(__PSP__) || defined(ARV_TANG)	// the table is not 16-bit aligned
+ 				word command1 = (word)*(SEQTBL_0 + Char.curr_seq);
+ 				word command2 =  (word)*(SEQTBL_0 + Char.curr_seq+1);
+ 				//for some reason, this works, but normal pointer cast crashes (?)
+diff -ruN a/sdlpop/seg009.c b/sdlpop/seg009.c
+--- a/sdlpop/seg009.c	2026-10-28 07:53:49
++++ b/sdlpop/seg009.c	2026-10-28 08:24:29
+@@ -457,6 +457,18 @@
+ }
+ 
+ dat_type* open_dat(const char* filename, int optional __attribute__((unused))) {
++#ifdef ARV_TANG
++	/* The pack of that DAT on the card (arv/pak.c) */
++	struct datfile_s *df = pak_open(filename);
++	if (df == NULL) {
++		return NULL;
++	}
++	dat_type* pointer = alloc_dat();
++	pointer->df = df;
++	pointer->next_dat = dat_chain_ptr;
++	dat_chain_ptr = pointer;
++	return pointer;
++#else
+ 	for (unsigned i = 0; i < datfiles_count; i++) {
+ 		const struct datfile_s *df = &datfiles[i];
+ 		if (0 == strcmp(filename, df->filename)) {
+@@ -469,6 +481,7 @@
+ 		}
+ 	}
+ 	return NULL;
++#endif
+ }
+ 
+ // seg009:9CAC
+@@ -552,26 +565,6 @@
+ }
+ 
+ /*
+- * Find the generated sprite set for a shpl resource, searching the open DAT
+- * chain most-recent-first, exactly as load_from_opendats_const() would.
+- *
+- * Walking the chain rather than using just its head matters for the guards:
+- * seg000.c opens GUARD1.DAT or GUARD2.DAT and *then* asks for resource 750
+- * from GUARD.DAT, so the head is GUARD.DAT - which has no set of its own,
+- * because the images are shared and only the palette differs. The chain then
+- * yields the GUARD1/GUARD2 entry, which is the one carrying that palette.
+- */
+-static const struct sprite_set_s* find_sprite_set(int shpl_id) {
+-	for (dat_type* dat = dat_chain_ptr; dat != NULL; dat = dat->next_dat) {
+-		if (dat->df == NULL) continue;
+-		const struct sprite_set_s* set =
+-			resources_find_sprite_set(dat->df->filename, shpl_id);
+-		if (set != NULL) return set;
+-	}
+-	return NULL;
+-}
+-
+-/*
+  * Give a chtab a writable copy of its image table.
+  *
+  * Only the environment chtab needs this, and only because load_more_opt_graf()
+@@ -627,7 +620,125 @@
+ 	chtab->images = s_patchable_images;
+ }
+ 
++void chtab_patch_image(chtab_type* chtab, int index, const SDL_Surface* image) {
++	if (chtab == NULL || image == NULL) return;
++	if (index < 0 || index >= chtab->n_images) return;
++	chtab_make_patchable(chtab);
++#ifdef ARV_TANG
++	pak_free_image(chtab->images[index]);
++#endif
++	chtab->images[index] = image;
++}
++
++#ifdef ARV_TANG
+ /*
++ * A resource's entry in the open packs, searched most-recent-first as the
++ * DAT chain is; *df_out says in which pack.
++ */
++static const struct pak_entry* find_entry(int resource_id, const struct datfile_s **df_out) {
++	for (dat_type* pointer = dat_chain_ptr; pointer != NULL; pointer = pointer->next_dat) {
++		const struct pak_entry *e = pak_find(pointer->df, resource_id);
++		if (e != NULL) {
++			if (df_out) *df_out = pointer->df;
++			return e;
++		}
++	}
++	return NULL;
++}
++
++/* An image of the open packs as a lazy 4-bit surface, its own row */
++const SDL_Surface* find_resource_surface(int resource_id) {
++	const struct datfile_s *df;
++	const struct pak_entry *e = find_entry(resource_id, &df);
++	if (e == NULL || e->kind != 1) return NULL;
++	return pak_image(df, e, e->row);
++}
++
++/* Write a sprite set's sixteen colours (6-bit, from its shpl) into its row */
++static void load_set_palette_6(int row, const rgb_type *pal6) {
++	SDL_Color colors[16];
++	for (int i = 0; i < 16; ++i) {
++		colors[i].r = pal6_to_8(pal6[i].r);
++		colors[i].g = pal6_to_8(pal6[i].g);
++		colors[i].b = pal6_to_8(pal6[i].b);
++		colors[i].a = SDL_ALPHA_OPAQUE;
++		palette[row * 16 + i] = pal6[i];
++	}
++	colors[0].r = colors[0].g = colors[0].b = 0;
++	colors[0].a = SDL_ALPHA_TRANSPARENT;
++	SDL_SetPaletteColors(PSDL_GlobalPalette(), colors, row * 16, 16);
++}
++
++/*
++ * Load a sprite set: its shpl (the image count and the sixteen colours) and
++ * a lazy surface for each image that follows it in the open packs; the
++ * pixels are read from the card when first drawn (arv/pak.c).
++ */
++chtab_type* load_sprites_from_file(int resource, int palette_bits, int quit_on_error) {
++	dat_shpl_type shpl;
++	const struct datfile_s *df;
++	const struct pak_entry *e = find_entry(resource, &df);
++	if (e == NULL || pak_read(df, e, &shpl, sizeof(shpl)) < 3) {
++		printf("Can't load sprites from resource %d.\n", resource);
++		if (quit_on_error) quit(1);
++		return NULL;
++	}
++	const int row = palette_bits ? find_first_pal_row(palette_bits) : 0;
++	const int n = shpl.n_images;
++	chtab_type* chtab = alloc_chtab();
++	chtab->n_images = (word) n;
++	chtab->images = calloc((size_t) n + 1, sizeof(SDL_Surface *));
++	chtab->palette_row = (unsigned char) row;
++	chtab->chtab_palette_bits = (word) palette_bits;
++	chtab->has_palette_bits = (palette_bits != 0);
++	for (int i = 0; i < n; ++i) {
++		const struct datfile_s *idf;
++		const struct pak_entry *ie = find_entry(resource + 1 + i, &idf);
++		chtab->images[i] = (ie != NULL && ie->kind == 1) ? pak_image(idf, ie, row) : NULL;
++	}
++	if (graphics_mode == gmMcgaVga && palette_bits != 0) {
++		chtab_palette_bits |= palette_bits;
++		load_set_palette_6(row, shpl.palette.vga);
++	}
++	return chtab;
++}
++
++// seg009:11A8
++void free_chtab(chtab_type *chtab_ptr) {
++	if (chtab_ptr == NULL) return;
++	if (graphics_mode == gmMcgaVga && chtab_ptr->has_palette_bits) {
++		chtab_palette_bits &= ~ chtab_ptr->chtab_palette_bits;
++	}
++	if (chtab_ptr->images != NULL) {
++		for (int i = 0; i < chtab_ptr->n_images; ++i)
++			pak_free_image(chtab_ptr->images[i]);
++		if (chtab_ptr->images != s_patchable_images)
++			free(chtab_ptr->images);
++	}
++	release_chtab(chtab_ptr);
++}
++#else
++/*
++ * Find the generated sprite set for a shpl resource, searching the open DAT
++ * chain most-recent-first, exactly as load_from_opendats_const() would.
++ *
++ * Walking the chain rather than using just its head matters for the guards:
++ * seg000.c opens GUARD1.DAT or GUARD2.DAT and *then* asks for resource 750
++ * from GUARD.DAT, so the head is GUARD.DAT - which has no set of its own,
++ * because the images are shared and only the palette differs. The chain then
++ * yields the GUARD1/GUARD2 entry, which is the one carrying that palette.
++ */
++static const struct sprite_set_s* find_sprite_set(int shpl_id) {
++	for (dat_type* dat = dat_chain_ptr; dat != NULL; dat = dat->next_dat) {
++		if (dat->df == NULL) continue;
++		const struct sprite_set_s* set =
++			resources_find_sprite_set(dat->df->filename, shpl_id);
++		if (set != NULL) return set;
++	}
++	return NULL;
++}
++
++/*
+  * The converted surface for a resource id, or NULL if that resource was not
+  * converted to an image. Searches the open DAT chain, as
+  * load_from_opendats_metadata() does.
+@@ -650,13 +761,6 @@
+ 	return r ? r->surface : NULL;
+ }
+ 
+-void chtab_patch_image(chtab_type* chtab, int index, const SDL_Surface* image) {
+-	if (chtab == NULL || image == NULL) return;
+-	if (index < 0 || index >= chtab->n_images) return;
+-	chtab_make_patchable(chtab);
+-	chtab->images[index] = image;
+-}
+-
+ /* Write a sprite set's sixteen colours into its row of the global CLUT. */
+ static void load_set_palette(const struct sprite_set_s* set) {
+ 	SDL_Color colors[16];
+@@ -750,6 +854,8 @@
+ 	release_chtab(chtab_ptr);
+ }
+ 
++#endif
++
+ // seg009:8CE6
+ void decompress_rle_lr(byte* destination,const byte* source,int dest_length) {
+ 	const byte* src_pos = source;
+@@ -1002,8 +1108,13 @@
+  * The glyphs are drawn mono - method_3_blit_mono substitutes a colour per call
+  * - so they need no palette row and no colour key beyond index 0.
+  */
++#ifdef ARV_TANG
++#define POP_FONT_PIXEL_POOL VRAM_FONT_SIZE
++#define s_font_pixels (arv_vram + VRAM_FONT)            /* in the VRAM */
++#else
+ #define POP_FONT_PIXEL_POOL 12288
+ static byte s_font_pixels[POP_FONT_PIXEL_POOL];
++#endif
+ static int  s_font_pixels_used;
+ 
+ static image_type* decode_font_glyph(const image_data_type* image_data) {
+@@ -2902,6 +3013,39 @@
+ #endif
+ }
+ 
++#ifdef ARV_TANG
++/*
++ * A sound is kept as its header and where it is on the card; play_digi_sound
++ * reads the samples into the VRAM when it plays it (one sound plays at a time).
++ */
++struct snd_handle {
++	uint8_t  file;
++	uint32_t off, len;
++	int      rid;
++	byte     hdr[32];
++};
++#define SOUND_HANDLE(b) ((struct snd_handle *) ((char *) (b) - offsetof(struct snd_handle, hdr)))
++
++/* The game's sound number of a sound (music.c names its file after it) */
++int arv_sound_number(const sound_buffer_type *buffer) {
++	return buffer ? SOUND_HANDLE(buffer)->rid - 10000 : -1;
++}
++
++static const sound_buffer_type* load_sound_handle(int rid) {
++	const struct datfile_s *df;
++	const struct pak_entry *e = find_entry(rid, &df);
++	if (e == NULL) return NULL;
++	struct snd_handle *h = calloc(1, sizeof(*h));
++	if (h == NULL) return NULL;
++	h->file = df->file;
++	h->off = e->off;
++	h->len = e->len;
++	h->rid = rid;
++	pak_read(df, e, h->hdr, (int) sizeof(h->hdr));
++	return (const sound_buffer_type*) h->hdr;
++}
++#endif
++
+ const sound_buffer_type* load_sound(int index) {
+ 	const sound_buffer_type* result = NULL;
+ 	//printf("load_sound(%d)\n", index);
+@@ -2963,7 +3107,11 @@
+ 		}
+ 	}
+ #endif
++#ifdef ARV_TANG
++	result = load_sound_handle(index + 10000);
++#else
+ 	result = (const sound_buffer_type*) load_from_opendats_const(index + 10000, NULL);
++#endif
+ 	if (result != NULL && (result->type & 7) == sound_digi) {
+ 		result = convert_digi_sound(result);
+ 	}
+@@ -3072,6 +3220,19 @@
+ 	}
+ 	if (false == determine_wave_version(buffer, &waveinfo)) return;
+ 	if (waveinfo.sample_count == 0 || waveinfo.sample_rate == 0) return;
++#ifdef ARV_TANG
++	{
++		const struct snd_handle *h = SOUND_HANDLE(buffer);
++		const uint32_t skip = (uint32_t) (waveinfo.samples - (const byte *) buffer);
++		uint32_t n = h->len < VRAM_SOUND_SIZE ? h->len : VRAM_SOUND_SIZE;
++		SDL_LockAudio();
++		digi_playing = 0;
++		SDL_UnlockAudio();
++		if (pak_read_at(h->file, h->off, arv_vram + VRAM_SOUND, n) != (int) n) return;
++		waveinfo.samples = arv_vram + VRAM_SOUND + skip;
++		if (skip + waveinfo.sample_count > n) waveinfo.sample_count = (n > skip) ? n - skip : 0;
++	}
++#endif
+ 
+ 	SDL_LockAudio();
+ 	digi_source       = waveinfo.samples;
+@@ -3092,7 +3253,11 @@
+ 		free(buffer->ogg.file_contents);
+ 	}
+ #endif
++#ifdef ARV_TANG
++	free(SOUND_HANDLE(buffer));
++#else
+ 	free(buffer);
++#endif
+ }
+ 
+ // seg009:7220
+@@ -3301,7 +3466,12 @@
+  */
+ #define PICOPOP_FB_W 320
+ #define PICOPOP_FB_H 200
++#ifdef ARV_TANG
++/* The game's frame in the VRAM, copied to the displayed one at each present */
++#define picopop_screen_fb ((Uint8 (*)[PICOPOP_FB_W]) (arv_vram + VRAM_BACK))
++#else
+ static Uint8 picopop_screen_fb[PICOPOP_FB_H][PICOPOP_FB_W];
++#endif
+ 
+ void set_gr_mode(byte grmode) {
+ #ifdef SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING
+@@ -3708,6 +3878,56 @@
+ 	}
+ }
+ 
++#ifdef ARV_TANG
++// seg009:9F34
++void close_dat(dat_type* pointer) {
++	dat_type** prev = &dat_chain_ptr;
++	dat_type* curr = dat_chain_ptr;
++	while (curr != NULL) {
++		if (curr == pointer) {
++			*prev = curr->next_dat;
++			pak_close((struct datfile_s *) curr->df);
++			release_dat(curr);
++			return;
++		}
++		curr = curr->next_dat;
++		prev = &((*prev)->next_dat);
++	}
++}
++
++/*
++ * A raw resource, read from the card into the heap and kept: the game asks
++ * this way only for small tables (palettes, the MIDI instruments) and the
++ * sound headers (load_sound keeps only the header, see there).
++ */
++const char *load_from_opendats_const(int resource_id, int* out_size) {
++	const struct datfile_s *df;
++	const struct pak_entry *e = find_entry(resource_id, &df);
++	if (e == NULL) return NULL;
++	char *buf = malloc(e->len ? e->len : 1);
++	if (buf == NULL || pak_read(df, e, buf, (int) e->len) != (int) e->len) {
++		free(buf);
++		return NULL;
++	}
++	if (out_size) *out_size = (int) e->len;
++	return buf;
++}
++
++// seg009:A172
++int load_from_opendats_to_area(int resource_id, void *area, int length) {
++	const struct datfile_s *df;
++	const struct pak_entry *e = find_entry(resource_id, &df);
++	if (e == NULL) {
++		fprintf(stderr, "Resource %d not found\n", resource_id);
++		return -1;
++	}
++	if ((int) e->len != length) {
++		fprintf(stderr, "Size mismatch: %d != %d\n", length, (int) e->len);
++		return -1;
++	}
++	return pak_read(df, e, area, length) == length ? 0 : -1;
++}
++#else
+ static int load_from_opendats_metadata(int resource_id, const char **data, int* size) {
+ 	// Go through all open DAT files.
+ 	for (dat_type* pointer = dat_chain_ptr; pointer != NULL; pointer = pointer->next_dat) {
+@@ -3768,6 +3988,8 @@
+ 	fprintf(stderr, "Resource %d not found\n", resource_id);
+ 	return -1;
+ }
++
++#endif
+ 
+ // SDL-specific implementations
+ 

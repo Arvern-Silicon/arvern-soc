@@ -22,10 +22,15 @@
 +incdir+.
 +define+ARV_CPU_INST=dut.dut
 +define+LONG_TIMEOUT
++define+BLNS_INST=dut.belenos_inst
++define+BLNS_TRACE_CYCLE=probes_instructions.trace_cycle
 altsyncram.v
 cyclonev_io.v
 ../../../../../arvern/bench/verilog/probes_cpu.v
 ../../../../../arvern/bench/verilog/probes_instructions.v
+../../../../../arvern-belenos/bench/verilog/probes_gpu.v
+../../../../../arvern-belenos/bench/verilog/ili9341_8080_model.v
+vscreen.v
 tb_arvern_fpga.v
 
 //=============================================================================

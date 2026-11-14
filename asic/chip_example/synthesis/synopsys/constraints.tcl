@@ -357,6 +357,21 @@ set_output_delay $DBG_OUT_DLY -add_delay -max -clock "free_clk" [get_ports dbg_n
 set_output_delay 0                       -min -clock "free_clk" [get_ports dbg_ndmreset_o]
 
 
+#=========================#
+# BELENOS DISPLAY PANELS  #
+#=========================#
+
+# Panel outputs are registered inside Belenos; the 8080 / SPI protocol timing
+# itself is counted in free_clk cycles (DIF_CFG.CLK_DIV), not timed at the pads.
+set PANEL_OUT_DLY [expr ($CLOCK_PERIOD/100) * 50]
+
+foreach PANEL_OUT {lcd_d_o lcd_d_oe_o lcd_cs_n_o lcd_rd_n_o lcd_wr_n_o lcd_dc_o
+                   spi_sck_o spi_mosi_o spi_cs_n_o spi_dc_o lcd_reset_n_o lcd_on_o} {
+    set_output_delay $PANEL_OUT_DLY -add_delay -max -clock "free_clk" [get_ports $PANEL_OUT]
+    set_output_delay 0                         -min -clock "free_clk" [get_ports $PANEL_OUT]
+}
+
+
 #========================#
 # FEEDTHROUGH EXCEPTIONS #
 #========================#
@@ -376,3 +391,19 @@ set_false_path -from [get_ports hresetn_i]      ; # free_clk-domain async reset
 set_false_path -from [get_ports scan_mode_i] ; # static test-mode control
 set_false_path -from [get_ports resetn_lf_i]    ; # clk_lf-domain async reset
 set_false_path -from [get_ports jtag_trst_n_i]  ; # TCK-domain async TAP reset
+
+# Belenos panel inputs are asynchronous to free_clk and enter through
+# arv_synchronizer stages (8080 read data, SPI MISO, tearing effect). The 8080
+# read data is sampled at the edge that raises RD: its route to the first
+# synchroniser stage is part of the read round trip (Belenos programming guide,
+# 8080 PHY), so it gets a maximum delay of one period instead of a false path.
+set BLNS_D_SYNC [get_cells -hierarchical -filter "full_name =~ *blns_dbi_8080_inst*u_d_sync*meta_q* && is_sequential == true"]
+if {[sizeof_collection $BLNS_D_SYNC] > 0} {
+    set_input_delay 0 -clock free_clk [get_ports lcd_d_i*]   ;# the route alone gets the budget
+    set_max_delay $CLOCK_PERIOD -from [get_ports lcd_d_i*] -to $BLNS_D_SYNC
+    set_false_path -hold -from [get_ports lcd_d_i*]   ;# asynchronous: no hold relationship
+} else {
+    echo "Warning: no 8080 read synchroniser found; lcd_d_i left unconstrained (no 8080 PHY?)"
+}
+set_false_path -from [get_ports spi_miso_i]     ; # SPI MISO
+set_false_path -from [get_ports lcd_te_i]       ; # panel tearing effect

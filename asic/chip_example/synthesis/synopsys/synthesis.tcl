@@ -118,7 +118,8 @@ if {$WITH_DFT} {
 
     # DFT Design Rule Check
     # Expected DRC baseline (anything else is a regression):
-    #   TEST-451 x12 -- the ROM / SRAM macros are black boxes to DFT (no test model
+    #   TEST-451 x29 -- the ROM / SRAM macros (12, plus 16 Belenos VRAM banks and the
+    #                   Belenos LUT) are black boxes to DFT (no test model
     #                   in the library views). A production flow tests them by
     #                   memory BIST with the vendor's test models; this example
     #                   SoC does not, so the logic around them is covered only as
@@ -256,6 +257,11 @@ if {$WITH_DFT} {
 current_design $DESIGN_NAME
 source ./report_sram_path.tcl
 redirect -tee -file ./results/report.sram_path {report_sram_path}
+
+# Belenos graphic controller paths
+current_design $DESIGN_NAME
+source ./report_belenos_paths.tcl
+redirect -file ./results/report.belenos_paths {report_belenos_paths}
 
 # Print area summary with NAND2 equivalent cell count
 puts $::AREA_SUMMARY

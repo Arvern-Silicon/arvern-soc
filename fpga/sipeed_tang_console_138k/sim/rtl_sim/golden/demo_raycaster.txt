@@ -1,0 +1,2 @@
+# demo_raycaster: SHA-1 of the sync-point panel images, in order (soc_regress.py --bless)
+2966242dcc94506183b18aad347160a824a80ce9  fb_22.hex

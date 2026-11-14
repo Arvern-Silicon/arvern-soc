@@ -1,7 +1,7 @@
 # aRVern GDB init for command-line GDB -- server-agnostic (OpenOCD *or*
 # arvern-gdbserver on :3333).
 #
-#   riscv-none-elf-gdb -x debug/arvern.gdbinit software/apps/leds/leds.elf
+#   riscv-none-elf-gdb -x debug/arvern.gdbinit software/apps/demo_leds/demo_leds.elf
 #
 # It opens its own connection to :3333, so do not source it from an IDE (or a
 # GDB session) that is already connected.

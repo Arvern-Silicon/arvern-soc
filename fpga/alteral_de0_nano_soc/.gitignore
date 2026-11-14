@@ -5,7 +5,12 @@ sim/rtl_sim/run/log
 sim/rtl_sim/run/stats
 sim/rtl_sim/run/simv
 sim/rtl_sim/run/stimulus.v
+sim/rtl_sim/run/firmware_syms.vh
 sim/rtl_sim/run/asphalt.log
+sim/rtl_sim/run/slipstream.log
+sim/rtl_sim/run/frame_log/
+sim/rtl_sim/run/vscreen_*.bmp
+sim/rtl_sim/run/verilator_build.log
 sim/rtl_sim/run/benchmark_traces
 sim/rtl_sim/run/*.vcd
 sim/rtl_sim/run/pmem.*
@@ -14,8 +19,10 @@ sim/rtl_sim/run/march_config.sh
 sim/rtl_sim/run/submit_sim.f
 sim/rtl_sim/run/submit_lint.f
 sim/rtl_sim/run/flat_lint.f
+sim/rtl_sim/run/*_verilator.log
 
 software/apps/*/*.elf
+software/apps/*/.sim_defines
 software/apps/*/*.ihex
 software/apps/*/*.lst
 software/apps/*/*.size
@@ -27,15 +34,18 @@ software/apps/*/*.jdebug*
 .idea/
 build/
 cmake-build-*/
-software/apps/*.local/
+# Private applications (priv_*), never published
+software/apps/priv_*/
 
-synthesis/altera/WORK
+synthesis/altera_*
+synthesis/altera/WORK*
 synthesis/altera/bitstreams/*.sof
 synthesis/altera/bitstreams/*.svf
 synthesis/altera/bitstreams/*.jic
 synthesis/altera/bitstreams/*.rpd
 synthesis/altera/bitstreams/*.map
 synthesis/altera/bitstreams/*.cdf
+synthesis/altera/bitstreams/*.zip
 synthesis/altera/scripts/design_files.qsf
 synthesis/altera/setup_d.*
 

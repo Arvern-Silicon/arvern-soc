@@ -225,3 +225,14 @@ waive_hdl -add bench_memory_model \
 waive_hdl -add ipdff_registered_feedback \
           -comment "q_o -> inline expression -> d_i on the same flop instance: registered feedback, not a combinational loop" \
           -tag CODING_INST_CONNECTED_INPUT_OUTPUT
+
+# ---------------------------------------------------------------------------
+# INHERITED from Belenos: the GPU command FIFO storage is a memory array without
+# reset by design (LUT RAM on FPGA, flops on ASIC). The pointers and the count
+# are reset; an entry is written before it is read and the head reads 0 while the
+# FIFO is empty. Same waiver as Belenos' own lint (lint/vc_static/waivers.tcl).
+# ---------------------------------------------------------------------------
+waive_hdl -add blns_gpu_fifo_storage_no_reset \
+          -comment "blns_gpu_fifo mem: RAM-style storage array, unreset by design (flush moves pointers only)" \
+          -tag {CODING_FF_NO_RST_SET CODING_RST_ASYNC_FF} \
+          -filter {Signal=~*u_gpu/u_fifo/mem*}

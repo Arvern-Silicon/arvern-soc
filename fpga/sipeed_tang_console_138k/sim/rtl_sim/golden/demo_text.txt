@@ -1,0 +1,6 @@
+# demo_text: SHA-1 of the sync-point panel images, in order (soc_regress.py --bless)
+e345959c843decc3d7c612c7347e793a2c2ae9a0  fb_57.hex
+d96d6995bc06927ca50baa07a1dd1bcbdc7fd94e  fb_72.hex
+4457c09cde51e550ad911a310aeb94ac8b00854d  fb_88.hex
+e480723434345da74aff8b6db05779e8d65fcf01  fb_104.hex
+24285ddfe928905f779fa4883b9566578cc35120  fb_115.hex
